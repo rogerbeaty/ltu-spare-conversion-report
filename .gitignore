@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/uploads/
+.DS_Store
+tmp/
+*_audit_all.csv
+*_audit_non_strikes.csv
