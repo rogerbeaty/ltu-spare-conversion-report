@@ -3,12 +3,21 @@ from __future__ import annotations
 import hashlib
 from html import escape as html_escape
 from io import BytesIO
+import os
 from pathlib import Path
 import re
 
 import pandas as pd
 import streamlit as st
 
+from src.auth import (
+    ADMIN,
+    AppDatabase,
+    AppUser,
+    AuthorizationError,
+    UserInputError,
+    generate_password,
+)
 from src.athlete_pdf import athlete_names as pdf_athlete_names
 from src.athlete_pdf import athlete_report_filename, build_athlete_pdf_reports_zip, build_athlete_report_pdf
 from src.dataset import (
@@ -35,16 +44,15 @@ from src.parser import (
     preprocess_bowlsheet_export,
 )
 from src.storage import (
-    delete_all_uploaded_csvs,
-    delete_uploaded_csv,
     list_uploaded_csvs,
-    save_uploaded_csv_batch,
+    sync_uploaded_csvs,
     uploaded_csv_label,
 )
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.report import add_team_game_score_columns, append_event_total_row, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
+LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
 DATASET_SCHEMA_VERSION = b"team-name-squad-filter-v13"
 SHOW_ATTEMPT_DETAIL = False
 REPORT_STATE_KEYS = (
@@ -65,26 +73,13 @@ def _clear_report_state() -> None:
         st.session_state[key] = None
 
 
-def _delete_selected_upload() -> None:
-    selected = st.session_state.get("selected_saved_file", "")
-    if not selected:
-        return
-    delete_uploaded_csv(UPLOAD_DIR, selected)
-    _clear_report_state()
-    st.session_state["selected_saved_file"] = ""
-    st.session_state["last_uploader_hash"] = None
-    st.session_state["uploader_key"] += 1
-
-
-def _delete_all_uploads() -> None:
-    deleted_count = delete_all_uploaded_csvs(UPLOAD_DIR)
+def _reset_after_upload_change() -> None:
     _clear_report_state()
     st.session_state["selected_saved_file"] = ""
     st.session_state["last_uploader_hash"] = None
     st.session_state["event_filter_multi"] = []
     st.session_state["athlete_filter"] = "All Athletes"
-    st.session_state["uploader_key"] += 1
-    st.session_state["deleted_upload_count"] = deleted_count
+    st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
 
 
 def _download_filename(team: str, event: str) -> str:
@@ -99,6 +94,252 @@ def _summary_excel_filename(team: str, event: str) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9 ._-]+", "", f"LTU {team} - {event} - Overall Summary")
     return f"{safe_name}.xlsx"
 
+
+def _secret_section(name: str) -> dict[str, str]:
+    try:
+        section = st.secrets.get(name, {})
+    except FileNotFoundError:
+        return {}
+    return {str(key): str(value) for key, value in section.items()}
+
+
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL") or _secret_section("database").get("url")
+    if not url:
+        if Path("/mount/src").exists():
+            raise RuntimeError(
+                "A persistent database URL is required on Streamlit Community Cloud. "
+                "Add [database].url in the app's Secrets settings."
+            )
+        LOCAL_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{LOCAL_DATABASE_PATH}"
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgres://")
+    if url.startswith("postgresql://") and "+" not in url.split("://", 1)[0]:
+        return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    return url
+
+
+@st.cache_resource
+def _get_database(url: str) -> AppDatabase:
+    database = AppDatabase(url)
+    database.initialize()
+    return database
+
+
+def _bootstrap_database(database: AppDatabase) -> bool:
+    if database.user_count() > 0:
+        return True
+    auth_secrets = _secret_section("auth")
+    name = auth_secrets.get("admin_name", "").strip()
+    email = auth_secrets.get("admin_email", "").strip()
+    password = auth_secrets.get("admin_password", "")
+    if not all((name, email, password)):
+        return False
+    database.bootstrap_admin(name, email, password)
+    return True
+
+
+def _logout() -> None:
+    st.session_state.pop("authenticated_user_id", None)
+    st.session_state.pop("application_section", None)
+    _clear_report_state()
+
+
+def _render_login(database: AppDatabase) -> AppUser:
+    user_id = st.session_state.get("authenticated_user_id")
+    if user_id is not None:
+        user = database.get_user(int(user_id))
+        if user is not None and user.active:
+            return user
+        _logout()
+
+    st.title("LTU Spare Conversion Report")
+    st.subheader("Sign in")
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input("Email", autocomplete="email")
+        password = st.text_input("Password", type="password", autocomplete="current-password")
+        submitted = st.form_submit_button("Sign in", type="primary")
+    if submitted:
+        try:
+            user = database.authenticate(email, password)
+        except UserInputError:
+            user = None
+        if user is None:
+            st.error("The email or password is incorrect.")
+        else:
+            st.session_state["authenticated_user_id"] = user.id
+            st.rerun()
+    st.stop()
+
+
+def _render_required_password_change(database: AppDatabase, user: AppUser) -> None:
+    if not user.must_change_password:
+        return
+    st.title("Set a new password")
+    st.info("Your temporary password must be changed before you can access reports.")
+    with st.form("required_password_change"):
+        current_password = st.text_input("Temporary password", type="password")
+        new_password = st.text_input("New password", type="password")
+        confirm_password = st.text_input("Confirm new password", type="password")
+        submitted = st.form_submit_button("Update password", type="primary")
+    if submitted:
+        if new_password != confirm_password:
+            st.error("The new passwords do not match.")
+        else:
+            try:
+                database.change_password(user, current_password, new_password)
+            except UserInputError as exc:
+                st.error(str(exc))
+            else:
+                st.success("Password updated.")
+                st.rerun()
+    if st.button("Sign out"):
+        _logout()
+        st.rerun()
+    st.stop()
+
+
+def _selected_section(user: AppUser) -> str:
+    if not user.is_admin:
+        st.session_state["application_section"] = "Report"
+        return "Report"
+    selected = st.session_state.get("application_section", "Report")
+    if selected not in {"Report", "Admin"}:
+        selected = "Report"
+        st.session_state["application_section"] = selected
+    return selected
+
+
+def _render_profile_menu(database: AppDatabase, user: AppUser, selected_section: str) -> None:
+    with st.popover(
+        user.name,
+        icon=":material/account_circle:",
+        use_container_width=True,
+    ):
+        st.caption(user.email)
+        st.caption(f"Role: {user.role.title()}")
+        with st.form("self_password_change"):
+            current_password = st.text_input("Current password", type="password")
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm password", type="password")
+            change_submitted = st.form_submit_button("Change password")
+        if change_submitted:
+            if new_password != confirm_password:
+                st.error("The new passwords do not match.")
+            else:
+                try:
+                    database.change_password(user, current_password, new_password)
+                except UserInputError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Password updated.")
+        if user.is_admin:
+            destination = "Report" if selected_section == "Admin" else "Admin"
+            if st.button(f"{destination} View", use_container_width=True):
+                st.session_state["application_section"] = destination
+                st.rerun()
+        if st.button("Sign out", use_container_width=True):
+            _logout()
+            st.rerun()
+
+
+def _render_admin_screen(database: AppDatabase, actor: AppUser) -> None:
+    st.subheader("Administration")
+    st.caption("Manage authorized users and their report access.")
+
+    users = database.list_users(actor)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Name": user.name,
+                    "Email": user.email,
+                    "Role": user.role.title(),
+                    "Active": user.active,
+                    "Password change required": user.must_change_password,
+                }
+                for user in users
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+    create_tab, edit_tab = st.tabs(["Add user", "Edit user"])
+    with create_tab:
+        with st.form("create_user_form", clear_on_submit=True):
+            name = st.text_input("Name")
+            email = st.text_input("Email")
+            role_label = st.selectbox("Role", ["User", "Admin"])
+            submitted = st.form_submit_button("Create user", type="primary")
+        if submitted:
+            temporary_password = generate_password()
+            try:
+                created = database.create_user(
+                    actor,
+                    name,
+                    email,
+                    role_label.casefold(),
+                    password=temporary_password,
+                )
+            except (AuthorizationError, UserInputError) as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Created {created.name}. Share this temporary password securely; it is shown once.")
+                st.code(temporary_password, language=None)
+
+    with edit_tab:
+        user_by_label = {f"{user.name} ({user.email})": user for user in users}
+        selected_label = st.selectbox("User", list(user_by_label), key="admin_selected_user")
+        selected = user_by_label[selected_label]
+        with st.form("edit_user_form"):
+            edit_name = st.text_input("Name", value=selected.name)
+            edit_email = st.text_input("Email", value=selected.email)
+            edit_role = st.selectbox(
+                "Role",
+                ["User", "Admin"],
+                index=1 if selected.role == ADMIN else 0,
+            )
+            edit_active = st.checkbox("Active", value=selected.active)
+            update_submitted = st.form_submit_button("Save changes", type="primary")
+        if update_submitted:
+            try:
+                database.update_user(
+                    actor,
+                    selected.id,
+                    name=edit_name,
+                    email=edit_email,
+                    role=edit_role.casefold(),
+                    active=edit_active,
+                )
+            except (AuthorizationError, UserInputError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("User updated.")
+                st.rerun()
+
+        reset_col, delete_col = st.columns(2)
+        with reset_col:
+            if st.button("Generate temporary password", use_container_width=True):
+                try:
+                    temporary_password = database.reset_password(actor, selected.id)
+                except (AuthorizationError, UserInputError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("The password was reset and must be changed at next sign-in.")
+                    st.code(temporary_password, language=None)
+        with delete_col:
+            with st.popover("Delete user", use_container_width=True):
+                st.warning(f"Permanently delete {selected.name}?")
+                if st.button("Confirm delete user", type="primary", use_container_width=True):
+                    try:
+                        database.delete_user(actor, selected.id)
+                    except (AuthorizationError, UserInputError) as exc:
+                        st.error(str(exc))
+                    else:
+                        st.rerun()
+
 st.set_page_config(page_title="LTU Spare Conversion Report", layout="wide")
 st.markdown(
     """
@@ -110,6 +351,9 @@ st.markdown(
     }
     #MainMenu {
       visibility: hidden;
+    }
+    [data-testid="stAppDeployButton"] {
+      display: none !important;
     }
     div[data-testid="stDownloadButton"] {
       display: flex;
@@ -142,7 +386,48 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-header_slot = st.empty()
+try:
+    database = _get_database(_database_url())
+except RuntimeError as exc:
+    st.title("LTU Spare Conversion Report")
+    st.error(str(exc))
+    st.stop()
+if not _bootstrap_database(database):
+    st.title("LTU Spare Conversion Report")
+    st.error("Authentication is not configured. Add the database and initial administrator settings.")
+    st.code(
+        '[database]\nurl = "postgresql://..."\n\n'
+        '[auth]\nadmin_name = "Report Administrator"\n'
+        'admin_email = "admin@example.edu"\nadmin_password = "a-strong-temporary-password"',
+        language="toml",
+    )
+    st.stop()
+
+current_user = _render_login(database)
+_render_required_password_change(database, current_user)
+if current_user.is_admin:
+    st.markdown(
+        '<style>[data-testid="stAppDeployButton"] { display: flex !important; }</style>',
+        unsafe_allow_html=True,
+    )
+
+selected_page = _selected_section(current_user)
+
+title_col, profile_col = st.columns([8, 2])
+with title_col:
+    st.title("LTU Spare Conversion Report")
+with profile_col:
+    st.write("")
+    _render_profile_menu(database, current_user, selected_page)
+
+if selected_page == "Admin":
+    _render_admin_screen(database, current_user)
+    st.stop()
+
+sync_uploaded_csvs(
+    UPLOAD_DIR,
+    [(upload.stored_name, upload.content) for upload in database.list_uploads()],
+)
 
 if "athlete_pdf_zip_bytes" not in st.session_state:
     st.session_state["athlete_pdf_zip_bytes"] = None
@@ -167,29 +452,34 @@ if "last_uploader_hash" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
 
-uploaded_files = st.file_uploader(
-    "Upload BowlSheet CSVs",
-    type=["csv"],
-    accept_multiple_files=True,
-    key=f"csv_uploader_{st.session_state['uploader_key']}",
-)
+if current_user.is_admin:
+    uploaded_files = st.file_uploader(
+        "Upload BowlSheet CSVs",
+        type=["csv"],
+        accept_multiple_files=True,
+        key=f"csv_uploader_{st.session_state['uploader_key']}",
+    )
 
-if uploaded_files:
-    upload_entries = [
-        (uploaded.name, uploaded.getvalue())
-        for uploaded in uploaded_files
-    ]
-    batch_hash = hashlib.sha256()
-    for original_name, uploaded_bytes in upload_entries:
-        batch_hash.update(original_name.encode("utf-8"))
-        batch_hash.update(b"\0")
-        batch_hash.update(uploaded_bytes)
-        batch_hash.update(b"\0")
-    uploader_hash = batch_hash.hexdigest()
-    if st.session_state.get("last_uploader_hash") != uploader_hash:
-        stored_paths = save_uploaded_csv_batch(UPLOAD_DIR, upload_entries)
-        st.session_state["selected_saved_file"] = stored_paths[-1].name
-        st.session_state["last_uploader_hash"] = uploader_hash
+    if uploaded_files:
+        upload_entries = [
+            (uploaded.name, uploaded.getvalue())
+            for uploaded in uploaded_files
+        ]
+        batch_hash = hashlib.sha256()
+        for original_name, uploaded_bytes in upload_entries:
+            batch_hash.update(original_name.encode("utf-8"))
+            batch_hash.update(b"\0")
+            batch_hash.update(uploaded_bytes)
+            batch_hash.update(b"\0")
+        uploader_hash = batch_hash.hexdigest()
+        if st.session_state.get("last_uploader_hash") != uploader_hash:
+            stored_uploads = database.save_uploads(current_user, upload_entries)
+            sync_uploaded_csvs(
+                UPLOAD_DIR,
+                [(upload.stored_name, upload.content) for upload in database.list_uploads()],
+            )
+            st.session_state["selected_saved_file"] = stored_uploads[-1].stored_name
+            st.session_state["last_uploader_hash"] = uploader_hash
 
 saved_files = list_uploaded_csvs(UPLOAD_DIR)
 saved_names = [path.name for path in saved_files]
@@ -223,39 +513,38 @@ if st.session_state.get("squad_data_scope") not in squad_options:
     st.session_state["squad_data_scope"] = ALL_SQUADS
 squad_scope = st.session_state["squad_data_scope"]
 
-saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
-with saved_col:
-    selected_saved_file = st.selectbox(
-        "Manage saved file",
-        options=saved_options,
-        key="selected_saved_file",
-        format_func=lambda value: "No saved file selected"
-        if not value
-        else uploaded_csv_label(UPLOAD_DIR / value),
-    )
-with delete_col:
-    st.write("")
-    st.write("")
-    st.button(
-        "Delete saved file",
-        disabled=not selected_saved_file,
-        on_click=_delete_selected_upload,
-    )
-with delete_all_col:
-    st.write("")
-    st.write("")
-    with st.popover(
-        "Delete all data",
-        disabled=not saved_files,
-        use_container_width=True,
-    ):
-        st.warning("This permanently deletes every saved CSV and clears the report.")
-        st.button(
-            "Confirm delete all data",
-            type="primary",
-            on_click=_delete_all_uploads,
-            use_container_width=True,
+if current_user.is_admin:
+    saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
+    with saved_col:
+        selected_saved_file = st.selectbox(
+            "Manage saved file",
+            options=saved_options,
+            key="selected_saved_file",
+            format_func=lambda value: "No saved file selected"
+            if not value
+            else uploaded_csv_label(UPLOAD_DIR / value),
         )
+    with delete_col:
+        st.write("")
+        st.write("")
+        if st.button("Delete saved file", disabled=not selected_saved_file):
+            database.delete_upload(current_user, selected_saved_file)
+            _reset_after_upload_change()
+            st.rerun()
+    with delete_all_col:
+        st.write("")
+        st.write("")
+        with st.popover(
+            "Delete all data",
+            disabled=not saved_files,
+            use_container_width=True,
+        ):
+            st.warning("This permanently deletes every saved CSV and clears the report.")
+            if st.button("Confirm delete all data", type="primary", use_container_width=True):
+                deleted_count = database.delete_all_uploads(current_user)
+                _reset_after_upload_change()
+                st.session_state["deleted_upload_count"] = deleted_count
+                st.rerun()
 
 deleted_upload_count = st.session_state.pop("deleted_upload_count", None)
 if deleted_upload_count is not None:
@@ -308,24 +597,6 @@ if selected_paths:
         st.session_state["uploaded_hash"] = combined_hash
 else:
     _clear_report_state()
-
-status = st.session_state.get("status")
-with header_slot.container():
-    title_col, info_col = st.columns([8, 2])
-    with title_col:
-        st.title("LTU Spare Conversion Report")
-    with info_col:
-        st.write("")
-        with st.popover("Report Info"):
-            st.markdown(f"**Selected men/women:** {team_scope}")
-            st.markdown(f"**Selected team:** {squad_scope}")
-            st.write(f"Total saved files: {len(saved_files)}")
-            if status:
-                st.write(f"Files used for selected team: {status['files_loaded']}")
-                st.write(f"Distinct events: {status['events_found']}")
-                st.write(f"Distinct athletes: {status['athletes_found']}")
-            else:
-                st.write("No report data is currently loaded.")
 
 def _build_summary_preview(
     records: pd.DataFrame,

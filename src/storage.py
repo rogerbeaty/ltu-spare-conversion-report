@@ -52,6 +52,21 @@ def list_uploaded_csvs(upload_dir: Path) -> list[Path]:
     return sorted(files, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
 
 
+def sync_uploaded_csvs(upload_dir: Path, uploads: Iterable[tuple[str, bytes]]) -> list[Path]:
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    expected: dict[str, bytes] = dict(uploads)
+    for path in list_uploaded_csvs(upload_dir):
+        if path.name not in expected:
+            path.unlink()
+    synced: list[Path] = []
+    for stored_name, content in expected.items():
+        target = upload_dir / stored_name
+        if not target.exists() or target.read_bytes() != content:
+            target.write_bytes(content)
+        synced.append(target)
+    return synced
+
+
 def delete_uploaded_csv(upload_dir: Path, stored_name: str) -> bool:
     root = upload_dir.resolve()
     target = (root / stored_name).resolve()

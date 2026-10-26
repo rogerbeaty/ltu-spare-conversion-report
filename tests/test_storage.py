@@ -10,6 +10,7 @@ from src.storage import (
     list_uploaded_csvs,
     save_uploaded_csv,
     save_uploaded_csv_batch,
+    sync_uploaded_csvs,
     uploaded_csv_label,
 )
 
@@ -77,3 +78,16 @@ def test_delete_all_uploaded_csvs_removes_every_saved_upload(tmp_path: Path) -> 
     assert list_uploaded_csvs(tmp_path) == []
     assert unrelated.exists()
     assert delete_all_uploaded_csvs(tmp_path) == 0
+
+
+def test_sync_uploaded_csvs_mirrors_database_contents(tmp_path: Path) -> None:
+    stale = save_uploaded_csv(tmp_path, "stale.csv", b"stale\n")
+
+    synced = sync_uploaded_csvs(
+        tmp_path,
+        [("abc__current.csv", b"current\n")],
+    )
+
+    assert not stale.exists()
+    assert synced == [tmp_path / "abc__current.csv"]
+    assert synced[0].read_bytes() == b"current\n"
