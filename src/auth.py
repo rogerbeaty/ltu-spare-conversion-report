@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy import Boolean, DateTime, ForeignKey, LargeBinary, String, create_engine, delete, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, LargeBinary, String, create_engine, delete, func, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 ADMIN = "admin"
@@ -90,6 +91,28 @@ class AppDatabase:
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
+        if self.engine.dialect.name == "postgresql":
+            self._align_postgres_sequences()
+
+    def _align_postgres_sequences(self) -> None:
+        # Explicit IDs copied during a migration do not advance PostgreSQL sequences.
+        sequence_tables = {
+            "app_users": "app_users_id_seq",
+            "app_uploads": "app_uploads_id_seq",
+        }
+        with self.engine.begin() as connection:
+            for table_name, sequence_name in sequence_tables.items():
+                max_id = connection.scalar(text(f"SELECT MAX(id) FROM {table_name}"))
+                if max_id is None:
+                    continue
+                last_value, is_called = connection.execute(
+                    text(f"SELECT last_value, is_called FROM {sequence_name}")
+                ).one()
+                if max_id > last_value or (max_id == last_value and not is_called):
+                    connection.execute(
+                        text("SELECT setval(:sequence_name, :max_id, true)"),
+                        {"sequence_name": sequence_name, "max_id": max_id},
+                    )
 
     def user_count(self) -> int:
         with Session(self.engine) as session:
@@ -159,7 +182,15 @@ class AppDatabase:
                 updated_at=now,
             )
             session.add(row)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                if session.scalar(select(UserRow.id).where(UserRow.email == normalized_email)) is not None:
+                    raise UserInputError("A user with that email already exists.") from exc
+                raise UserInputError(
+                    "The user could not be created because of a database conflict. Please try again."
+                ) from exc
             session.refresh(row)
             return user_from_row(row)
 
@@ -194,7 +225,11 @@ class AppDatabase:
             row.role = role
             row.active = active
             row.updated_at = utc_now()
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                raise UserInputError("A user with that email already exists.") from exc
             session.refresh(row)
             return user_from_row(row)
 

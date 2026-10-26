@@ -45,6 +45,25 @@ def test_authenticate_and_force_password_change(database: AppDatabase, admin) ->
     assert database.authenticate("bowler@ltu.edu", "TemporaryPass1!") is None
 
 
+def test_create_user_rejects_duplicate_email_case_insensitively(database: AppDatabase, admin) -> None:
+    database.create_user(
+        admin,
+        "Existing User",
+        "existing@ltu.edu",
+        USER,
+        password="TemporaryPass1!",
+    )
+
+    with pytest.raises(UserInputError, match="already exists"):
+        database.create_user(
+            admin,
+            "Duplicate User",
+            " EXISTING@LTU.EDU ",
+            USER,
+            password="TemporaryPass2!",
+        )
+
+
 def test_user_cannot_manage_users_or_uploads(database: AppDatabase, admin) -> None:
     user = database.create_user(
         admin,
