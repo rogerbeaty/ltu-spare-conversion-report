@@ -5,12 +5,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.parser import parse_bowlsheet_csv
+from src.parser import extract_team_names, parse_bowlsheet_csv
 
 ALL_TEAMS = "All Teams"
 MEN = "Men"
 WOMEN = "Women"
 UNCLASSIFIED = "Unclassified"
+ALL_SQUADS = "All Teams"
+VARSITY = "Varsity"
+JV = "JV"
 
 
 @dataclass
@@ -34,6 +37,14 @@ def classify_team_from_filename(filename: str) -> str:
     return UNCLASSIFIED
 
 
+def classify_squad(team_names: list[str]) -> str:
+    return JV if any("jv" in team_name.casefold() for team_name in team_names) else VARSITY
+
+
+def classify_squad_from_upload(path: Path) -> str:
+    return classify_squad(extract_team_names(path.read_bytes()))
+
+
 def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDataset:
     record_frames: list[pd.DataFrame] = []
     attempt_frames: list[pd.DataFrame] = []
@@ -46,7 +57,9 @@ def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDatase
         if team_scope != ALL_TEAMS and team != team_scope:
             continue
 
-        parsed = parse_bowlsheet_csv(path.read_bytes())
+        csv_bytes = path.read_bytes()
+        parsed = parse_bowlsheet_csv(csv_bytes)
+        squad = classify_squad(extract_team_names(csv_bytes))
         source_key = path.name.partition("__")[0][:12]
         source_files.append(path.name)
 
@@ -58,6 +71,7 @@ def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDatase
         ):
             prepared = frame.copy()
             prepared["team_group"] = team
+            prepared["squad_group"] = squad
             prepared["source_file"] = path.name
             if "game_id" in prepared.columns:
                 prepared["game_id"] = source_key + ":" + prepared["game_id"].astype(str)

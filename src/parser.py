@@ -95,6 +95,32 @@ def detect_format(csv_bytes: bytes) -> str:
     return "Delivery-grid"
 
 
+def extract_team_names(csv_bytes: bytes) -> list[str]:
+    csv_bytes = preprocess_bowlsheet_export(csv_bytes)
+    if detect_format(csv_bytes) == "Frame-columns":
+        df = _read_csv_with_fallback(csv_bytes)
+        team_column = next(
+            (column for column in df.columns if _normalize_colname(column) == "team"),
+            None,
+        )
+        if team_column is None:
+            return []
+        values = df[team_column]
+    else:
+        df = _read_csv_with_fallback(csv_bytes, header=None)
+        if len(df.columns) <= 6:
+            return []
+        values = df.iloc[:, 6]
+
+    return list(
+        dict.fromkeys(
+            text
+            for value in values
+            if (text := _clean_text(value)) and text.casefold() != "team"
+        )
+    )
+
+
 def _parse_format_a(csv_bytes: bytes) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, int]:
     df = _read_csv_with_fallback(csv_bytes)
     rows: list[dict[str, Any]] = []

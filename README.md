@@ -5,8 +5,10 @@ Local Streamlit app that analyzes BowlSheet CSV exports and creates individual a
 ## What it does
 - Accepts one or multiple CSVs in each upload and stores local copies in `data/uploads/`.
 - Lets you reopen or delete previously uploaded data from the app.
+- Provides a two-step **Delete all data** control to remove every saved upload and reset the report.
 - Combines all saved Men's files or all saved Women's files into one selected team view.
 - Uses the CSV `Event` field as the tournament grouping and the filename for Men's/Women's classification.
+- Classifies Varsity versus JV from BowlSheet Team Name: names containing `JV` are JV and all others are Varsity.
 - Detects input format:
   - `Frame-columns` (classic BowlSheet with `Frame{n}Ball{m}...` fields)
   - `Delivery-grid` (101-column export read with fixed indices)
@@ -89,10 +91,12 @@ The download icon beside **Bowler Statistics** follows the Event filter. With **
 
 ### Team and event grouping
 
-Include `Men` or `Women` in every uploaded filename. The app classifies filenames case-insensitively and provides a Team filter:
+Include `Men` or `Women` in every uploaded filename. The app classifies filenames case-insensitively and provides Men/Women and Team filters:
 
 - `Men` combines every saved Men's file.
 - `Women` combines every saved Women's file.
+
+The Team filter uses BowlSheet Team Name. Any Team Name containing `JV` (case-insensitive) is JV; every other Team Name is Varsity.
 
 Each CSV's `Event` value is treated as the tournament name. Leave the Event filter empty for all events, select one event for event-specific statistics and downloads, or select multiple events for a combined on-screen summary. Multi-event selections are for on-screen comparison and do not create exports.
 

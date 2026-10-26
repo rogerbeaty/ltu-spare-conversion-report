@@ -63,6 +63,13 @@ def delete_uploaded_csv(upload_dir: Path, stored_name: str) -> bool:
     return True
 
 
+def delete_all_uploaded_csvs(upload_dir: Path) -> int:
+    files = list_uploaded_csvs(upload_dir)
+    for path in files:
+        path.unlink()
+    return len(files)
+
+
 def uploaded_csv_label(path: Path) -> str:
     digest, separator, original_name = path.name.partition("__")
     if not separator:

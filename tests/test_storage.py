@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.storage import (
+    delete_all_uploaded_csvs,
     delete_uploaded_csv,
     list_uploaded_csvs,
     save_uploaded_csv,
@@ -59,3 +60,20 @@ def test_save_uploaded_csv_batch_saves_every_selected_file(tmp_path: Path) -> No
         "LTU-Womens-WHAC-1.csv",
     }
     assert set(list_uploaded_csvs(tmp_path)) == set(stored)
+
+
+def test_delete_all_uploaded_csvs_removes_every_saved_upload(tmp_path: Path) -> None:
+    save_uploaded_csv_batch(
+        tmp_path,
+        [
+            ("first.csv", b"event\nFirst\n"),
+            ("second.csv", b"event\nSecond\n"),
+        ],
+    )
+    unrelated = tmp_path / "keep.txt"
+    unrelated.write_text("not an upload", encoding="utf-8")
+
+    assert delete_all_uploaded_csvs(tmp_path) == 2
+    assert list_uploaded_csvs(tmp_path) == []
+    assert unrelated.exists()
+    assert delete_all_uploaded_csvs(tmp_path) == 0

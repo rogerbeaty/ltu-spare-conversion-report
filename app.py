@@ -11,7 +11,17 @@ import streamlit as st
 
 from src.athlete_pdf import athlete_names as pdf_athlete_names
 from src.athlete_pdf import athlete_report_filename, build_athlete_pdf_reports_zip, build_athlete_report_pdf
-from src.dataset import ALL_TEAMS, MEN, WOMEN, classify_team_from_filename, combine_saved_datasets
+from src.dataset import (
+    ALL_SQUADS,
+    ALL_TEAMS,
+    JV,
+    MEN,
+    VARSITY,
+    WOMEN,
+    classify_squad_from_upload,
+    classify_team_from_filename,
+    combine_saved_datasets,
+)
 from src.detail import (
     add_statistic_classification,
     render_statistic_chips,
@@ -25,6 +35,7 @@ from src.parser import (
     preprocess_bowlsheet_export,
 )
 from src.storage import (
+    delete_all_uploaded_csvs,
     delete_uploaded_csv,
     list_uploaded_csvs,
     save_uploaded_csv_batch,
@@ -34,7 +45,7 @@ from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.report import add_team_game_score_columns, append_event_total_row, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
-DATASET_SCHEMA_VERSION = b"replace-upload-and-canonical-athlete-v12"
+DATASET_SCHEMA_VERSION = b"team-name-squad-filter-v13"
 SHOW_ATTEMPT_DETAIL = False
 REPORT_STATE_KEYS = (
     "athlete_pdf_zip_bytes",
@@ -63,6 +74,17 @@ def _delete_selected_upload() -> None:
     st.session_state["selected_saved_file"] = ""
     st.session_state["last_uploader_hash"] = None
     st.session_state["uploader_key"] += 1
+
+
+def _delete_all_uploads() -> None:
+    deleted_count = delete_all_uploaded_csvs(UPLOAD_DIR)
+    _clear_report_state()
+    st.session_state["selected_saved_file"] = ""
+    st.session_state["last_uploader_hash"] = None
+    st.session_state["event_filter_multi"] = []
+    st.session_state["athlete_filter"] = "All Athletes"
+    st.session_state["uploader_key"] += 1
+    st.session_state["deleted_upload_count"] = deleted_count
 
 
 def _download_filename(team: str, event: str) -> str:
@@ -185,7 +207,23 @@ if st.session_state.get("team_data_scope") not in team_options:
     st.session_state["team_data_scope"] = team_options[0]
 team_scope = st.session_state["team_data_scope"]
 
-saved_col, delete_col = st.columns([4, 1])
+file_squads = {path: classify_squad_from_upload(path) for path in saved_files}
+team_paths = [
+    path
+    for path in saved_files
+    if team_scope == ALL_TEAMS or classify_team_from_filename(path.name) == team_scope
+]
+available_squads = {file_squads[path] for path in team_paths}
+squad_options = [ALL_SQUADS] + [
+    squad
+    for squad in (VARSITY, JV)
+    if squad in available_squads
+]
+if st.session_state.get("squad_data_scope") not in squad_options:
+    st.session_state["squad_data_scope"] = ALL_SQUADS
+squad_scope = st.session_state["squad_data_scope"]
+
+saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
 with saved_col:
     selected_saved_file = st.selectbox(
         "Manage saved file",
@@ -203,16 +241,36 @@ with delete_col:
         disabled=not selected_saved_file,
         on_click=_delete_selected_upload,
     )
+with delete_all_col:
+    st.write("")
+    st.write("")
+    with st.popover(
+        "Delete all data",
+        disabled=not saved_files,
+        use_container_width=True,
+    ):
+        st.warning("This permanently deletes every saved CSV and clears the report.")
+        st.button(
+            "Confirm delete all data",
+            type="primary",
+            on_click=_delete_all_uploads,
+            use_container_width=True,
+        )
+
+deleted_upload_count = st.session_state.pop("deleted_upload_count", None)
+if deleted_upload_count is not None:
+    st.success(f"Deleted {deleted_upload_count} saved file(s). The report is now empty.")
 
 selected_paths = [
     path
-    for path in saved_files
-    if team_scope == ALL_TEAMS or classify_team_from_filename(path.name) == team_scope
+    for path in team_paths
+    if squad_scope == ALL_SQUADS or file_squads[path] == squad_scope
 ]
 if selected_paths:
     dataset_hash = hashlib.sha256()
     dataset_hash.update(DATASET_SCHEMA_VERSION)
     dataset_hash.update(team_scope.encode("utf-8"))
+    dataset_hash.update(squad_scope.encode("utf-8"))
     for path in sorted(selected_paths, key=lambda item: item.name):
         dataset_hash.update(path.name.encode("utf-8"))
         dataset_hash.update(path.read_bytes())
@@ -259,7 +317,8 @@ with header_slot.container():
     with info_col:
         st.write("")
         with st.popover("Report Info"):
-            st.markdown(f"**Selected team:** {team_scope}")
+            st.markdown(f"**Selected men/women:** {team_scope}")
+            st.markdown(f"**Selected team:** {squad_scope}")
             st.write(f"Total saved files: {len(saved_files)}")
             if status:
                 st.write(f"Files used for selected team: {status['files_loaded']}")
@@ -1200,9 +1259,9 @@ if records is not None:
     if st.session_state.get("athlete_filter") not in athlete_options:
         st.session_state["athlete_filter"] = "All Athletes"
 
-    col_team, col_event, col_athlete = st.columns(3)
+    col_team, col_event, col_squad, col_athlete = st.columns(4)
     with col_team:
-        st.selectbox("Team filter", team_options, key="team_data_scope")
+        st.selectbox("Men/Women filter", team_options, key="team_data_scope")
     with col_event:
         selected_events = st.multiselect(
             "Event filter",
@@ -1211,6 +1270,8 @@ if records is not None:
             placeholder="All Events",
             help="Leave empty for all events, or select one or more events.",
         )
+    with col_squad:
+        st.selectbox("Team filter", squad_options, key="squad_data_scope")
     with col_athlete:
         selected_athlete = st.selectbox("Athlete preview", athlete_options, key="athlete_filter")
     athlete_filter = None if selected_athlete == "All Athletes" else selected_athlete
