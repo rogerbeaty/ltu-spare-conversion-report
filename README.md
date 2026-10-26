@@ -3,7 +3,7 @@
 Local Streamlit app that analyzes BowlSheet CSV exports and creates individual athlete PDF reports.
 
 ## What it does
-- Accepts CSV uploads and stores local copies in `data/uploads/`.
+- Accepts one or multiple CSVs in each upload and stores local copies in `data/uploads/`.
 - Lets you reopen or delete previously uploaded data from the app.
 - Combines all saved Men's files or all saved Women's files into one selected team view.
 - Uses the CSV `Event` field as the tournament grouping and the filename for Men's/Women's classification.
@@ -76,7 +76,7 @@ streamlit run app.py
 ```
 
 5. In the browser UI:
-- Upload a BowlSheet CSV
+- Upload one BowlSheet CSV or select several CSVs at once
 - Select previously saved data without uploading it again, if desired
 - Use **Delete saved file** to remove the app's local copy
 - Use the download icon beside **Bowler Statistics** to download every athlete's PDF report in one ZIP file

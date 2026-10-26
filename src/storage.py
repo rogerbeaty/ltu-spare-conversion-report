@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -32,6 +33,16 @@ def save_uploaded_csv(upload_dir: Path, original_name: str, data: bytes) -> Path
         if prior != target:
             prior.unlink()
     return target
+
+
+def save_uploaded_csv_batch(
+    upload_dir: Path,
+    uploads: Iterable[tuple[str, bytes]],
+) -> list[Path]:
+    return [
+        save_uploaded_csv(upload_dir, original_name, data)
+        for original_name, data in uploads
+    ]
 
 
 def list_uploaded_csvs(upload_dir: Path) -> list[Path]:

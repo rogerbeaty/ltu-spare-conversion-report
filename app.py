@@ -24,7 +24,12 @@ from src.parser import (
     detect_format,
     preprocess_bowlsheet_export,
 )
-from src.storage import delete_uploaded_csv, list_uploaded_csvs, save_uploaded_csv, uploaded_csv_label
+from src.storage import (
+    delete_uploaded_csv,
+    list_uploaded_csvs,
+    save_uploaded_csv_batch,
+    uploaded_csv_label,
+)
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.report import add_team_game_score_columns, append_event_total_row, build_summary_workbook
 
@@ -140,18 +145,28 @@ if "last_uploader_hash" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
 
-uploaded = st.file_uploader(
-    "Upload BowlSheet CSV",
+uploaded_files = st.file_uploader(
+    "Upload BowlSheet CSVs",
     type=["csv"],
+    accept_multiple_files=True,
     key=f"csv_uploader_{st.session_state['uploader_key']}",
 )
 
-if uploaded is not None:
-    uploaded_bytes = uploaded.getvalue()
-    uploader_hash = hashlib.sha256(uploaded_bytes).hexdigest()
-    stored_path = save_uploaded_csv(UPLOAD_DIR, uploaded.name, uploaded_bytes)
+if uploaded_files:
+    upload_entries = [
+        (uploaded.name, uploaded.getvalue())
+        for uploaded in uploaded_files
+    ]
+    batch_hash = hashlib.sha256()
+    for original_name, uploaded_bytes in upload_entries:
+        batch_hash.update(original_name.encode("utf-8"))
+        batch_hash.update(b"\0")
+        batch_hash.update(uploaded_bytes)
+        batch_hash.update(b"\0")
+    uploader_hash = batch_hash.hexdigest()
     if st.session_state.get("last_uploader_hash") != uploader_hash:
-        st.session_state["selected_saved_file"] = stored_path.name
+        stored_paths = save_uploaded_csv_batch(UPLOAD_DIR, upload_entries)
+        st.session_state["selected_saved_file"] = stored_paths[-1].name
         st.session_state["last_uploader_hash"] = uploader_hash
 
 saved_files = list_uploaded_csvs(UPLOAD_DIR)

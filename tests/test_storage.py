@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from src.storage import delete_uploaded_csv, list_uploaded_csvs, save_uploaded_csv, uploaded_csv_label
+from src.storage import (
+    delete_uploaded_csv,
+    list_uploaded_csvs,
+    save_uploaded_csv,
+    save_uploaded_csv_batch,
+    uploaded_csv_label,
+)
 
 
 def test_save_list_and_delete_uploaded_csv(tmp_path: Path) -> None:
@@ -36,3 +42,20 @@ def test_corrected_upload_replaces_prior_file_with_same_name(tmp_path: Path) -> 
     assert corrected.exists()
     assert corrected.read_bytes() == b"name\nMatthew Schepis\n"
     assert list_uploaded_csvs(tmp_path) == [corrected]
+
+
+def test_save_uploaded_csv_batch_saves_every_selected_file(tmp_path: Path) -> None:
+    stored = save_uploaded_csv_batch(
+        tmp_path,
+        [
+            ("LTU-Mens-WHAC-1.csv", b"event,team\nWHAC 1,Men\n"),
+            ("LTU-Womens-WHAC-1.csv", b"event,team\nWHAC 1,Women\n"),
+        ],
+    )
+
+    assert len(stored) == 2
+    assert {uploaded_csv_label(path).split(" (")[0] for path in stored} == {
+        "LTU-Mens-WHAC-1.csv",
+        "LTU-Womens-WHAC-1.csv",
+    }
+    assert set(list_uploaded_csvs(tmp_path)) == set(stored)
