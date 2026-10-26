@@ -25,6 +25,8 @@ EVENT_NAME_ALIASES = {
     "2026 midwest collegiate championship": "2026 Detroit MCC",
 }
 ATHLETE_NAME_ALIASES = {
+    "matt schepis": "Matthew Schepis",
+    "matthew schepis": "Matthew Schepis",
     "serena miller": "Serina Miller",
     "serina miller": "Serina Miller",
     "william cunningham": "William Cunningham III",

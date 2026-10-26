@@ -17,6 +17,93 @@ RED_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")
 SUMMARY_HEADER_FILL = PatternFill(fill_type="solid", fgColor="17365D")
 
 
+def append_event_total_row(
+    summary: pd.DataFrame,
+    team_games: pd.DataFrame | None,
+) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+
+    def summed(column: str) -> int:
+        return int(pd.to_numeric(summary[column], errors="coerce").fillna(0).sum())
+
+    single_made = summed("Single-Pin Made")
+    single_attempts = summed("Single-Pin Attempts")
+    multi_made = summed("Multi-Pin Made")
+    multi_attempts = summed("Multi-Pin Attempts")
+    strikes = summed("Strikes")
+    strike_attempts = summed("Strike Attempts")
+    baker_points = summed("Baker Pts")
+    baker_frames = summed("Baker Frames")
+    average = None
+    if team_games is not None and not team_games.empty:
+        scores = pd.to_numeric(team_games["score"], errors="coerce").dropna()
+        average = float(scores.mean()) if not scores.empty else None
+
+    total = {
+        "Name": "Total",
+        "Single-Pin Made": single_made,
+        "Single-Pin Attempts": single_attempts,
+        "Single-Pin %": single_made / single_attempts if single_attempts else None,
+        "Multi-Pin Made": multi_made,
+        "Multi-Pin Attempts": multi_attempts,
+        "Multi-Pin %": multi_made / multi_attempts if multi_attempts else None,
+        "Strikes": strikes,
+        "Strike Attempts": strike_attempts,
+        "Strike %": strikes / strike_attempts if strike_attempts else None,
+        "Baker Pts": baker_points,
+        "Baker Frames": baker_frames,
+        "Baker Avg": baker_points / baker_frames if baker_frames else None,
+        "Average": average,
+    }
+    return pd.concat([summary, pd.DataFrame([total])], ignore_index=True)
+
+
+def add_team_game_score_columns(
+    summary: pd.DataFrame,
+    team_games: pd.DataFrame | None,
+    athlete_filter: str | None = None,
+) -> pd.DataFrame:
+    if summary.empty or team_games is None or team_games.empty:
+        return summary
+
+    scores_by_row: list[list[object]] = []
+    for _, summary_row in summary.iterrows():
+        athlete = athlete_filter or str(summary_row["Name"])
+        games = team_games[team_games["athlete"] == athlete].copy()
+        if games.empty:
+            scores_by_row.append([])
+            continue
+        games["__date"] = pd.to_datetime(games.get("game_date"), errors="coerce")
+        if "game_id" in games:
+            games["__game_order"] = pd.to_numeric(
+                games["game_id"].astype(str).str.rsplit(":", n=1).str[-1],
+                errors="coerce",
+            )
+        sort_columns = [
+            column
+            for column in ("__date", "source_file", "__game_order")
+            if column in games
+        ]
+        games = games.sort_values(sort_columns, ascending=True, na_position="last")
+        scores_by_row.append(games["score"].tolist())
+
+    max_games = max((len(scores) for scores in scores_by_row), default=0)
+    if max_games == 0:
+        return summary
+
+    out = summary.copy()
+    average_column = out.pop("Average") if "Average" in out.columns else None
+    for game_index in range(max_games):
+        out[f"Game {game_index + 1}"] = [
+            scores[game_index] if game_index < len(scores) else None
+            for scores in scores_by_row
+        ]
+    if average_column is not None:
+        out["Average"] = average_column
+    return out
+
+
 def build_summary_workbook(
     summary: pd.DataFrame,
     team: str,
@@ -65,23 +152,30 @@ def build_summary_workbook(
     column_numbers = {cell.value: cell.column for cell in ws[header_row]}
     for row in range(header_row + 1, ws.max_row + 1):
         ws.cell(row, column_numbers["Name"]).alignment = Alignment(horizontal="left")
+        if ws.cell(row, column_numbers["Name"]).value == "Total":
+            for cell in ws[row]:
+                cell.font = Font(bold=True)
         for header in ("SP %", "MP %", "STR %"):
+            if header not in column_numbers:
+                continue
             cell = ws.cell(row, column_numbers[header])
             if cell.value is not None:
                 cell.number_format = PCT_FORMAT
         for header in ("BKR Avg", "AVG"):
+            if header not in column_numbers:
+                continue
             cell = ws.cell(row, column_numbers[header])
             if cell.value is not None:
                 cell.number_format = "0.00"
-        sp_cell = ws.cell(row, column_numbers["SP %"])
-        if sp_cell.value is not None:
+        sp_cell = ws.cell(row, column_numbers["SP %"]) if "SP %" in column_numbers else None
+        if sp_cell is not None and sp_cell.value is not None:
             _apply_percentage_color(
                 sp_cell,
                 green_threshold=single_thresholds[0],
                 yellow_threshold=single_thresholds[1],
             )
-        mp_cell = ws.cell(row, column_numbers["MP %"])
-        if mp_cell.value is not None:
+        mp_cell = ws.cell(row, column_numbers["MP %"]) if "MP %" in column_numbers else None
+        if mp_cell is not None and mp_cell.value is not None:
             _apply_percentage_color(
                 mp_cell,
                 green_threshold=MULTI_PIN_THRESHOLDS[0],
@@ -105,7 +199,8 @@ def build_summary_workbook(
         "AVG": 10,
     }
     for cell in ws[header_row]:
-        ws.column_dimensions[cell.column_letter].width = widths.get(str(cell.value), 12)
+        width = 10 if str(cell.value).startswith("Game ") else widths.get(str(cell.value), 12)
+        ws.column_dimensions[cell.column_letter].width = width
 
     ws.freeze_panes = "A4"
     ws.auto_filter.ref = f"A{header_row}:{ws.cell(header_row, ws.max_column).column_letter}{ws.max_row}"

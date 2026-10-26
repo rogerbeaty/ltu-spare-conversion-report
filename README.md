@@ -25,6 +25,11 @@ Local Streamlit app that analyzes BowlSheet CSV exports and creates individual a
   - Baker games never affect Average
 - Creates a downloadable ZIP containing one portrait PDF report per athlete, plus an individual PDF download when an athlete is selected.
 - Provides an Excel download of the displayed Overall Summary when a specific event is selected.
+- Shows each athlete's chronological Team-game scores between Baker Average and Average for selected events.
+- Adds a combined Total row to every Overall Summary view.
+- Supports ascending and descending sorting by clicking any Overall Summary column header.
+- Sizes the Overall Summary to show all loaded rows without an internal vertical scrollbar.
+- Re-uploading a corrected CSV with the same filename replaces its prior saved version; deleting a saved file removes all of its data from the report.
 - Uses the limited-data fallback: when no combination has 10 attempts, combinations with 2-9 attempts move to the main table and only one-attempt combinations remain rare.
 - Single Pin colors: Men use green >= 90% and yellow >= 80%; Women use green >= 85% and yellow >= 75%.
 - Multi Pin colors for both teams: green >= 80% and yellow >= 50%.
@@ -89,4 +94,15 @@ Include `Men` or `Women` in every uploaded filename. The app classifies filename
 - `Men` combines every saved Men's file.
 - `Women` combines every saved Women's file.
 
-Each CSV's `Event` value is treated as the tournament name. With `All Events` selected, athlete statistics aggregate across every loaded tournament in the selected team scope. Selecting one event limits the statistics to that tournament.
+Each CSV's `Event` value is treated as the tournament name. Leave the Event filter empty for all events, select one event for event-specific statistics and downloads, or select multiple events for a combined on-screen summary. Multi-event selections are for on-screen comparison and do not create exports.
+
+## Deploy on Streamlit Community Cloud
+
+1. Push this project to a public GitHub repository. Do not add `data/uploads/`; it is excluded by `.gitignore`.
+2. Sign in to [Streamlit Community Cloud](https://share.streamlit.io/) with GitHub.
+3. Select **Create app**, choose the repository and `main` branch, and set the entrypoint to `app.py`.
+4. Deploy the app. Streamlit installs the packages in `requirements.txt` automatically.
+
+### Cloud data warning
+
+Community Cloud storage is temporary and may be cleared when the app restarts or is redeployed. This app's saved-upload folder is also shared by all visitors to the same deployment, so a public deployment should not be used for private or regulated athlete data. Keep the deployment restricted to approved users or use only data that is appropriate for everyone with the app URL to view and delete.

@@ -25,3 +25,14 @@ def test_save_list_and_delete_uploaded_csv(tmp_path: Path) -> None:
 def test_delete_rejects_paths_outside_upload_directory(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         delete_uploaded_csv(tmp_path, "../other.csv")
+
+
+def test_corrected_upload_replaces_prior_file_with_same_name(tmp_path: Path) -> None:
+    original = save_uploaded_csv(tmp_path, "WHAC 1.csv", b"name\nMatt Schepis\n")
+    corrected = save_uploaded_csv(tmp_path, "WHAC 1.csv", b"name\nMatthew Schepis\n")
+
+    assert original != corrected
+    assert not original.exists()
+    assert corrected.exists()
+    assert corrected.read_bytes() == b"name\nMatthew Schepis\n"
+    assert list_uploaded_csvs(tmp_path) == [corrected]

@@ -8,16 +8,29 @@ from pathlib import Path
 def save_uploaded_csv(upload_dir: Path, original_name: str, data: bytes) -> Path:
     upload_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(data).hexdigest()
+    safe_name = _safe_csv_name(original_name)
+    prior_versions = [
+        path
+        for path in upload_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() == ".csv"
+        and (path.name.partition("__")[2] or path.name).casefold() == safe_name.casefold()
+    ]
 
     existing = next(upload_dir.glob(f"{digest}__*.csv"), None)
     if existing is not None and existing.is_file():
+        for prior in prior_versions:
+            if prior != existing:
+                prior.unlink()
         return existing
 
-    safe_name = _safe_csv_name(original_name)
     target = upload_dir / f"{digest}__{safe_name}"
     temporary = upload_dir / f".{digest}.tmp"
     temporary.write_bytes(data)
     temporary.replace(target)
+    for prior in prior_versions:
+        if prior != target:
+            prior.unlink()
     return target
 
 

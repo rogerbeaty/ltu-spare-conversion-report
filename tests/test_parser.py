@@ -18,6 +18,7 @@ def test_canonical_event_and_athlete_names() -> None:
     assert canonicalize_event_name("WHAC 1 JAX 60") == "2026 WHAC 1"
     assert canonicalize_event_name("WHAC 1") == "2026 WHAC 1"
     assert canonicalize_event_name("2026 Midwest Collegiate Championship") == "2026 Detroit MCC"
+    assert canonicalize_athlete_name("Matt Schepis") == "Matthew Schepis"
     assert canonicalize_athlete_name("Serena Miller") == "Serina Miller"
     assert canonicalize_athlete_name("William Cunningham") == "William Cunningham III"
 

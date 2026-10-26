@@ -26,10 +26,10 @@ from src.parser import (
 )
 from src.storage import delete_uploaded_csv, list_uploaded_csvs, save_uploaded_csv, uploaded_csv_label
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
-from src.report import build_summary_workbook
+from src.report import add_team_game_score_columns, append_event_total_row, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
-DATASET_SCHEMA_VERSION = b"canonical-detroit-mcc-v11"
+DATASET_SCHEMA_VERSION = b"replace-upload-and-canonical-athlete-v12"
 SHOW_ATTEMPT_DETAIL = False
 REPORT_STATE_KEYS = (
     "athlete_pdf_zip_bytes",
@@ -98,6 +98,18 @@ st.markdown(
     }
     div[data-testid="stDownloadButton"] button p {
       font-size: 0;
+    }
+    div[data-testid="stMultiSelect"] [data-baseweb="tag"] {
+      background-color: #1f5a94 !important;
+      color: #ffffff !important;
+    }
+    div[data-testid="stMultiSelect"] [data-baseweb="tag"]:hover {
+      background-color: #174573 !important;
+    }
+    div[data-testid="stMultiSelect"] [data-baseweb="tag"] span,
+    div[data-testid="stMultiSelect"] [data-baseweb="tag"] svg {
+      color: #ffffff !important;
+      fill: #ffffff !important;
     }
     </style>
     """,
@@ -845,6 +857,10 @@ def _render_table_html(
             view[col] = view[col].apply(lambda v: "" if pd.isna(v) else f"{v:.2f}")
         elif str(col) in {"Baker Avg", "BKR Avg"}:
             view[col] = view[col].apply(lambda v: "" if pd.isna(v) else f"{v:.1f}")
+        elif re.fullmatch(r"Game \d+", str(col)):
+            view[col] = view[col].apply(
+                lambda v: "" if pd.isna(v) else str(int(v)) if float(v).is_integer() else str(v)
+            )
         elif str(col).endswith("%"):
             view[col] = view[col].apply(lambda v: "" if pd.isna(v) else f"{v:.2%}")
 
@@ -932,10 +948,10 @@ def _render_table_html(
 """
 
 
-def _render_summary_html(df: pd.DataFrame, single_thresholds: tuple[float, float]) -> str:
-    if df.empty:
-        return "<p>No summary data available.</p>"
-
+def _build_summary_grid(
+    df: pd.DataFrame,
+    single_thresholds: tuple[float, float],
+) -> tuple[pd.io.formats.style.Styler, dict[str, object]]:
     view = df.rename(
         columns={
             "Single-Pin Made": "SP Made",
@@ -953,13 +969,55 @@ def _render_summary_html(df: pd.DataFrame, single_thresholds: tuple[float, float
             "Average": "AVG",
         }
     )
-    return _render_table_html(
-        view,
-        color_pct_columns={
-            "SP %": single_thresholds,
-            "MP %": MULTI_PIN_THRESHOLDS,
-        },
-    )
+
+    formatters: dict[str, str] = {}
+    for column in ("SP %", "MP %", "STR %"):
+        if column in view.columns:
+            formatters[column] = "{:.2%}"
+    if "BKR Avg" in view.columns:
+        formatters["BKR Avg"] = "{:.1f}"
+    if "AVG" in view.columns:
+        formatters["AVG"] = "{:.2f}"
+    for column in view.columns:
+        if re.fullmatch(r"Game \d+", str(column)):
+            formatters[str(column)] = "{:.0f}"
+
+    def percentage_color(value: object, thresholds: tuple[float, float]) -> str:
+        if value is None or pd.isna(value):
+            return ""
+        green_threshold, yellow_threshold = thresholds
+        if float(value) >= green_threshold:
+            return "background-color: #C6EFCE"
+        if float(value) >= yellow_threshold:
+            return "background-color: #FFEB9C"
+        return "background-color: #FFC7CE"
+
+    styled = view.style.format(formatters, na_rep="")
+    if "SP %" in view.columns:
+        styled = styled.map(
+            lambda value: percentage_color(value, single_thresholds),
+            subset=["SP %"],
+        )
+    if "MP %" in view.columns:
+        styled = styled.map(
+            lambda value: percentage_color(value, MULTI_PIN_THRESHOLDS),
+            subset=["MP %"],
+        )
+    if "Name" in view.columns:
+        styled = styled.apply(
+            lambda row: ["font-weight: bold"] * len(row)
+            if row["Name"] == "Total"
+            else [""] * len(row),
+            axis=1,
+        )
+
+    column_config: dict[str, object] = {
+        str(column): st.column_config.Column(str(column), width="small")
+        for column in view.columns
+    }
+    if "Name" in view.columns:
+        column_config["Name"] = st.column_config.TextColumn("Name", width="medium", pinned=True)
+    return styled, column_config
 
 
 def _render_team_baker_detail(detail: pd.DataFrame) -> None:
@@ -1105,15 +1163,25 @@ if records is not None:
         event_values = event_order["event"].tolist()
     else:
         event_values = []
-    event_options = ["All Events"] + event_values
     athlete_names: set[str] = set(records["athlete"].dropna().astype(str)) if not records.empty else set()
     for frame in (frame_attempts, baker_frames, team_games):
         if frame is not None and not frame.empty:
             athlete_names.update(frame["athlete"].dropna().astype(str))
     athlete_values_all = sorted(athlete_names)
     athlete_options = ["All Athletes"] + athlete_values_all
-    if st.session_state.get("event_filter") not in event_options:
-        st.session_state["event_filter"] = "All Events"
+    previous_event_filter = st.session_state.pop("event_filter", None)
+    if "event_filter_multi" not in st.session_state:
+        st.session_state["event_filter_multi"] = (
+            [previous_event_filter]
+            if previous_event_filter in event_values
+            else []
+        )
+    else:
+        st.session_state["event_filter_multi"] = [
+            event
+            for event in st.session_state["event_filter_multi"]
+            if event in event_values
+        ]
     if st.session_state.get("athlete_filter") not in athlete_options:
         st.session_state["athlete_filter"] = "All Athletes"
 
@@ -1121,28 +1189,43 @@ if records is not None:
     with col_team:
         st.selectbox("Team filter", team_options, key="team_data_scope")
     with col_event:
-        selected_event = st.selectbox("Event filter", event_options, key="event_filter")
+        selected_events = st.multiselect(
+            "Event filter",
+            event_values,
+            key="event_filter_multi",
+            placeholder="All Events",
+            help="Leave empty for all events, or select one or more events.",
+        )
     with col_athlete:
         selected_athlete = st.selectbox("Athlete preview", athlete_options, key="athlete_filter")
     athlete_filter = None if selected_athlete == "All Athletes" else selected_athlete
+    all_events_selected = not selected_events
+    single_event_selected = len(selected_events) == 1
+    selected_event = selected_events[0] if single_event_selected else "All Events"
 
     records_event = records.copy()
     frame_attempts_event = frame_attempts.copy() if frame_attempts is not None else None
     baker_frames_event = baker_frames.copy() if baker_frames is not None else None
     team_games_event = team_games.copy() if team_games is not None else None
-    if selected_event != "All Events":
-        records_event = records_event[records_event["event"] == selected_event].copy()
+    if not all_events_selected:
+        records_event = records_event[records_event["event"].isin(selected_events)].copy()
         if frame_attempts_event is not None:
-            frame_attempts_event = frame_attempts_event[frame_attempts_event["event"] == selected_event].copy()
+            frame_attempts_event = frame_attempts_event[
+                frame_attempts_event["event"].isin(selected_events)
+            ].copy()
         if baker_frames_event is not None:
-            baker_frames_event = baker_frames_event[baker_frames_event["event"] == selected_event].copy()
+            baker_frames_event = baker_frames_event[
+                baker_frames_event["event"].isin(selected_events)
+            ].copy()
         if team_games_event is not None:
-            team_games_event = team_games_event[team_games_event["event"] == selected_event].copy()
+            team_games_event = team_games_event[
+                team_games_event["event"].isin(selected_events)
+            ].copy()
 
-    if selected_event == "All Events":
+    if all_events_selected:
         pdf_zip_bytes = st.session_state.get("athlete_pdf_zip_bytes")
         download_help = "Download athlete PDF reports for all events"
-    else:
+    elif single_event_selected:
         pdf_zip_bytes = _build_event_pdf_zip(
             team_scope,
             selected_event,
@@ -1153,9 +1236,11 @@ if records is not None:
             team_games_event,
         )
         download_help = f"Download athlete PDF reports for {selected_event}"
+    else:
+        pdf_zip_bytes = None
+        download_help = ""
 
     group_by_event_for_athlete = athlete_filter is not None
-    include_total_row = not (athlete_filter is not None and selected_event != "All Events")
     summary_preview = _build_summary_preview(
         records_event,
         frame_attempts_event,
@@ -1163,8 +1248,16 @@ if records is not None:
         team_games_event,
         athlete_filter=athlete_filter,
         group_by_event_for_athlete=group_by_event_for_athlete,
-        include_total_row=include_total_row,
+        include_total_row=True,
     )
+    if athlete_filter is None:
+        summary_preview = append_event_total_row(summary_preview, team_games_event)
+    if single_event_selected:
+        summary_preview = add_team_game_score_columns(
+            summary_preview,
+            team_games_event,
+            athlete_filter=athlete_filter,
+        )
 
     with statistics_header_slot.container():
         statistics_title_col, statistics_download_col = st.columns([3, 1])
@@ -1172,7 +1265,7 @@ if records is not None:
             st.subheader("Bowler Statistics")
         with statistics_download_col:
             individual_pdf_bytes = None
-            if athlete_filter is not None:
+            if athlete_filter is not None and (all_events_selected or single_event_selected):
                 individual_pdf_bytes = _build_individual_pdf(
                     team_scope,
                     selected_event,
@@ -1186,7 +1279,7 @@ if records is not None:
             individual_col, excel_col, bulk_col = st.columns(3)
             with individual_col:
                 if individual_pdf_bytes is not None:
-                    report_event = None if selected_event == "All Events" else selected_event
+                    report_event = selected_event if single_event_selected else None
                     st.download_button(
                         label=f"Download PDF for {athlete_filter}",
                         data=individual_pdf_bytes,
@@ -1196,7 +1289,7 @@ if records is not None:
                         help=f"Download the PDF report for {athlete_filter}",
                     )
             with excel_col:
-                if selected_event != "All Events":
+                if single_event_selected:
                     st.download_button(
                         label=f"Download {selected_event} Overall Summary as Excel",
                         data=build_summary_workbook(summary_preview, team_scope, selected_event),
@@ -1219,13 +1312,25 @@ if records is not None:
     if athlete_filter is not None:
         st.caption(f"Summary rows are grouped by event for {athlete_filter}.")
     st.markdown("**Overall Summary**")
-    st.markdown(
-        _render_summary_html(summary_preview, selected_single_thresholds),
-        unsafe_allow_html=True,
-    )
+    if summary_preview.empty:
+        st.info("No summary data available.")
+    else:
+        summary_grid, summary_column_config = _build_summary_grid(
+            summary_preview,
+            selected_single_thresholds,
+        )
+        st.dataframe(
+            summary_grid,
+            width="stretch",
+            height=40 + (35 * len(summary_preview)),
+            hide_index=True,
+            column_config=summary_column_config,
+            key="overall_summary_table",
+            row_height=35,
+        )
 
     if not records_event.empty:
-        single_event_mode = selected_event != "All Events"
+        single_event_mode = single_event_selected
         single_attempt_detail = pd.DataFrame()
         multi_attempt_detail = pd.DataFrame()
         strike_attempt_detail = pd.DataFrame()
@@ -1434,7 +1539,7 @@ if records is not None:
                                 unsafe_allow_html=True,
                             )
 
-        if selected_event != "All Events" and athlete_filter is not None:
+        if single_event_selected and athlete_filter is not None:
             st.markdown("**Ball-by-Ball Detail**")
             ball_detail = _build_combined_ball_by_ball_detail(
                 st.session_state.get("source_files", []),
