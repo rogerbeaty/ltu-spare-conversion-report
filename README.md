@@ -4,6 +4,7 @@ Authenticated Streamlit app that analyzes BowlSheet CSV exports and creates indi
 
 ## What it does
 - Accepts one or multiple CSVs in each upload and stores them in the configured database.
+- Processes each CSV once at upload into indexed spare, strike, Baker-frame, and Team-game tables while retaining the original CSV for auditing and future rule changes.
 - Requires every visitor to sign in.
 - Provides `Admin` and `User` roles. Only administrators can manage users or upload, update, and delete data.
 - Stores password hashes with Argon2. Plain-text passwords are never stored.
@@ -38,6 +39,7 @@ Authenticated Streamlit app that analyzes BowlSheet CSV exports and creates indi
 - Supports ascending and descending sorting by clicking any Overall Summary column header.
 - Sizes the Overall Summary to show all loaded rows without an internal vertical scrollbar.
 - Re-uploading a corrected CSV with the same filename replaces its prior saved version; deleting a saved file removes all of its data from the report.
+- Existing uploads are automatically backfilled when the processed-data schema changes. Normal filtering reads the processed tables instead of reparsing CSV content.
 - Uses the limited-data fallback: when no combination has 10 attempts, combinations with 2-9 attempts move to the main table and only one-attempt combinations remain rare.
 - Single Pin colors: Men use green >= 90% and yellow >= 80%; Women use green >= 85% and yellow >= 75%.
 - Multi Pin colors for both teams: green >= 80% and yellow >= 50%.
@@ -107,6 +109,8 @@ streamlit run app.py
 - Use the download icon beside **Bowler Statistics** to download every athlete's PDF report in one ZIP file
 
 With the local SQLite configuration, users and uploaded CSVs are stored in `data/ltu_report.db`. Parsed working copies are synchronized to `data/uploads/`. Both locations are excluded from Git. Deleting a saved file removes only the app's stored copy, not the original CSV elsewhere on the Mac.
+
+The database retains the raw upload and its processed rows. Raw files are synchronized to the local working directory only when the upload revision changes; report summaries and filters load their normalized rows directly from the database.
 
 ## Athlete PDF reports
 

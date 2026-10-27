@@ -29,9 +29,10 @@ from src.dataset import (
     MEN,
     VARSITY,
     WOMEN,
-    classify_squad_from_upload,
     classify_team_from_filename,
-    combine_saved_datasets,
+    ensure_processed_datasets,
+    load_processed_datasets,
+    processed_upload_metadata,
 )
 from src.detail import (
     add_statistic_classification,
@@ -79,11 +80,21 @@ def _clear_report_state() -> None:
 
 def _reset_after_upload_change() -> None:
     _clear_report_state()
-    st.session_state["selected_saved_file"] = ""
     st.session_state["last_uploader_hash"] = None
+    st.session_state["synced_upload_revision"] = None
     st.session_state["event_filter_multi"] = []
     st.session_state["athlete_filter"] = "All Athletes"
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
+
+
+@st.dialog("Delete all data")
+def _confirm_delete_all_data(database, current_user) -> None:
+    st.warning("This permanently deletes every saved CSV and clears the report.")
+    if st.button("Confirm delete all data", type="primary", use_container_width=True):
+        deleted_count = database.delete_all_uploads(current_user)
+        _reset_after_upload_change()
+        st.session_state["deleted_upload_count"] = deleted_count
+        st.rerun()
 
 
 def _download_filename(team: str, event: str) -> str:
@@ -516,10 +527,18 @@ if selected_page == "Admin":
     _render_admin_screen(database, current_user)
     st.stop()
 
-sync_uploaded_csvs(
-    UPLOAD_DIR,
-    [(upload.stored_name, upload.content) for upload in database.list_uploads()],
-)
+parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
+ensure_processed_datasets(database, parser_version)
+upload_revision = database.upload_revision()
+if (
+    st.session_state.get("synced_upload_revision") != upload_revision
+    or not UPLOAD_DIR.exists()
+):
+    sync_uploaded_csvs(
+        UPLOAD_DIR,
+        [(upload.stored_name, upload.content) for upload in database.list_uploads()],
+    )
+    st.session_state["synced_upload_revision"] = upload_revision
 
 if "athlete_pdf_zip_bytes" not in st.session_state:
     st.session_state["athlete_pdf_zip_bytes"] = None
@@ -566,12 +585,17 @@ if current_user.is_admin:
         uploader_hash = batch_hash.hexdigest()
         if st.session_state.get("last_uploader_hash") != uploader_hash:
             stored_uploads = database.save_uploads(current_user, upload_entries)
+            ensure_processed_datasets(database, parser_version)
+            upload_revision = database.upload_revision()
             sync_uploaded_csvs(
                 UPLOAD_DIR,
                 [(upload.stored_name, upload.content) for upload in database.list_uploads()],
             )
+            st.session_state["synced_upload_revision"] = upload_revision
             st.session_state["selected_saved_file"] = stored_uploads[-1].stored_name
-            st.session_state["last_uploader_hash"] = uploader_hash
+            st.session_state["last_uploader_hash"] = None
+            st.session_state["uploader_key"] += 1
+            st.rerun()
 
 saved_files = list_uploaded_csvs(UPLOAD_DIR)
 saved_names = [path.name for path in saved_files]
@@ -589,7 +613,11 @@ if st.session_state.get("team_data_scope") not in team_options:
     st.session_state["team_data_scope"] = team_options[0]
 team_scope = st.session_state["team_data_scope"]
 
-file_squads = {path: classify_squad_from_upload(path) for path in saved_files}
+upload_metadata = processed_upload_metadata(database)
+file_squads = {
+    path: upload_metadata.get(path.name, (classify_team_from_filename(path.name), VARSITY))[1]
+    for path in saved_files
+}
 team_paths = [
     path
     for path in saved_files
@@ -606,37 +634,33 @@ if st.session_state.get("squad_data_scope") not in squad_options:
 squad_scope = st.session_state["squad_data_scope"]
 
 if current_user.is_admin:
-    saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
-    with saved_col:
-        selected_saved_file = st.selectbox(
-            "Manage saved file",
-            options=saved_options,
-            key="selected_saved_file",
-            format_func=lambda value: "No saved file selected"
-            if not value
-            else uploaded_csv_label(UPLOAD_DIR / value),
-        )
-    with delete_col:
-        st.write("")
-        st.write("")
-        if st.button("Delete saved file", disabled=not selected_saved_file):
-            database.delete_upload(current_user, selected_saved_file)
-            _reset_after_upload_change()
-            st.rerun()
-    with delete_all_col:
-        st.write("")
-        st.write("")
-        with st.popover(
-            "Delete all data",
-            disabled=not saved_files,
-            use_container_width=True,
-        ):
-            st.warning("This permanently deletes every saved CSV and clears the report.")
-            if st.button("Confirm delete all data", type="primary", use_container_width=True):
-                deleted_count = database.delete_all_uploads(current_user)
+    with st.expander("Manage uploaded data", expanded=False):
+        saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
+        with saved_col:
+            selected_saved_file = st.selectbox(
+                "Saved file",
+                options=saved_options,
+                key="selected_saved_file",
+                format_func=lambda value: "No saved file selected"
+                if not value
+                else uploaded_csv_label(UPLOAD_DIR / value),
+            )
+        with delete_col:
+            st.write("")
+            st.write("")
+            if st.button("Delete saved file", disabled=not selected_saved_file):
+                database.delete_upload(current_user, selected_saved_file)
                 _reset_after_upload_change()
-                st.session_state["deleted_upload_count"] = deleted_count
                 st.rerun()
+        with delete_all_col:
+            st.write("")
+            st.write("")
+            if st.button(
+                "Delete all data",
+                disabled=not saved_files,
+                use_container_width=True,
+            ):
+                _confirm_delete_all_data(database, current_user)
 
 deleted_upload_count = st.session_state.pop("deleted_upload_count", None)
 if deleted_upload_count is not None:
@@ -652,13 +676,13 @@ if selected_paths:
     dataset_hash.update(DATASET_SCHEMA_VERSION)
     dataset_hash.update(team_scope.encode("utf-8"))
     dataset_hash.update(squad_scope.encode("utf-8"))
+    dataset_hash.update(upload_revision.encode("utf-8"))
     for path in sorted(selected_paths, key=lambda item: item.name):
         dataset_hash.update(path.name.encode("utf-8"))
-        dataset_hash.update(path.read_bytes())
     combined_hash = dataset_hash.hexdigest()
 
     if st.session_state.get("uploaded_hash") != combined_hash:
-        combined = combine_saved_datasets(selected_paths, team_scope)
+        combined = load_processed_datasets(database, [path.name for path in selected_paths])
         event_values: set[str] = set()
         athlete_values: set[str] = set()
         for frame in (combined.records, combined.frame_attempts, combined.baker_frames, combined.team_games):

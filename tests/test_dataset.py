@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.auth import ADMIN, AppDatabase
 from src.dataset import (
     ALL_TEAMS,
     JV,
@@ -14,6 +15,9 @@ from src.dataset import (
     classify_squad_from_upload,
     classify_team_from_filename,
     combine_saved_datasets,
+    ensure_processed_datasets,
+    load_processed_datasets,
+    processed_upload_metadata,
 )
 
 
@@ -71,3 +75,57 @@ def test_combine_saved_datasets_and_make_game_ids_unique(tmp_path: Path) -> None
     men_only = combine_saved_datasets([men, women], MEN)
     assert set(men_only.records["athlete"]) == {"Alex"}
     assert set(men_only.records["team_group"]) == {MEN}
+
+
+def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
+    database = AppDatabase(f"sqlite:///{tmp_path / 'processed.db'}")
+    database.initialize()
+    admin = database.create_user(
+        None,
+        "Admin",
+        "admin@example.test",
+        ADMIN,
+        password="AdminPassword1!",
+        must_change_password=False,
+    )
+
+    first_csv = tmp_path / "first.csv"
+    _write_team_csv(first_csv, "Matt", "Event 1")
+    first = database.save_uploads(
+        admin,
+        [("LTU-Mens-Varsity.csv", first_csv.read_bytes())],
+    )[0]
+
+    assert ensure_processed_datasets(database, "test-v1") == 1
+    assert ensure_processed_datasets(database, "test-v1") == 0
+    combined = load_processed_datasets(database, [first.stored_name])
+    assert combined.records["athlete"].tolist() == ["Matt"]
+    assert combined.records["made"].tolist() == [True]
+    assert set(combined.records["team_group"]) == {MEN}
+    assert processed_upload_metadata(database)[first.stored_name] == (MEN, VARSITY)
+
+    replacement_csv = tmp_path / "replacement.csv"
+    _write_team_csv(replacement_csv, "Matthew", "Event 1")
+    replacement = database.save_uploads(
+        admin,
+        [("LTU-Mens-Varsity.csv", replacement_csv.read_bytes())],
+    )[0]
+
+    assert replacement.id == first.id
+    assert ensure_processed_datasets(database, "test-v1") == 1
+    replaced = load_processed_datasets(database, [replacement.stored_name])
+    assert replaced.records["athlete"].tolist() == ["Matthew"]
+    assert processed_upload_metadata(database).keys() == {replacement.stored_name}
+
+    assert database.delete_upload(admin, replacement.stored_name)
+    assert processed_upload_metadata(database) == {}
+
+    restored = database.save_uploads(
+        admin,
+        [("LTU-Mens-Varsity.csv", replacement_csv.read_bytes())],
+    )[0]
+    assert ensure_processed_datasets(database, "test-v1") == 1
+    assert not load_processed_datasets(database, [restored.stored_name]).records.empty
+    assert database.delete_all_uploads(admin) == 1
+    assert database.list_uploads() == []
+    assert processed_upload_metadata(database) == {}
