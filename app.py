@@ -423,10 +423,19 @@ cookie_manager = stx.CookieManager(key="ltu_auth_cookie_manager")
 st.markdown(
     """
     <style>
-    .block-container {
+    .block-container,
+    [data-testid="stMainBlockContainer"] {
       max-width: 75vw;
       margin-left: auto;
       margin-right: auto;
+      padding-top: 2rem !important;
+    }
+    [data-testid="stElementContainer"]:has(
+      iframe[title="extra_streamlit_components.CookieManager.cookie_manager"]
+    ) {
+      display: none !important;
+      height: 0 !important;
+      margin: 0 !important;
     }
     #MainMenu {
       visibility: hidden;
