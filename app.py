@@ -29,9 +29,10 @@ from src.dataset import (
     MEN,
     VARSITY,
     WOMEN,
-    classify_squad_from_upload,
     classify_team_from_filename,
-    combine_saved_datasets,
+    ensure_processed_datasets,
+    load_processed_datasets,
+    processed_upload_metadata,
 )
 from src.detail import (
     add_statistic_classification,
@@ -81,6 +82,7 @@ def _reset_after_upload_change() -> None:
     _clear_report_state()
     st.session_state["selected_saved_file"] = ""
     st.session_state["last_uploader_hash"] = None
+    st.session_state["synced_upload_revision"] = None
     st.session_state["event_filter_multi"] = []
     st.session_state["athlete_filter"] = "All Athletes"
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
@@ -516,10 +518,18 @@ if selected_page == "Admin":
     _render_admin_screen(database, current_user)
     st.stop()
 
-sync_uploaded_csvs(
-    UPLOAD_DIR,
-    [(upload.stored_name, upload.content) for upload in database.list_uploads()],
-)
+parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
+ensure_processed_datasets(database, parser_version)
+upload_revision = database.upload_revision()
+if (
+    st.session_state.get("synced_upload_revision") != upload_revision
+    or not UPLOAD_DIR.exists()
+):
+    sync_uploaded_csvs(
+        UPLOAD_DIR,
+        [(upload.stored_name, upload.content) for upload in database.list_uploads()],
+    )
+    st.session_state["synced_upload_revision"] = upload_revision
 
 if "athlete_pdf_zip_bytes" not in st.session_state:
     st.session_state["athlete_pdf_zip_bytes"] = None
@@ -566,10 +576,13 @@ if current_user.is_admin:
         uploader_hash = batch_hash.hexdigest()
         if st.session_state.get("last_uploader_hash") != uploader_hash:
             stored_uploads = database.save_uploads(current_user, upload_entries)
+            ensure_processed_datasets(database, parser_version)
+            upload_revision = database.upload_revision()
             sync_uploaded_csvs(
                 UPLOAD_DIR,
                 [(upload.stored_name, upload.content) for upload in database.list_uploads()],
             )
+            st.session_state["synced_upload_revision"] = upload_revision
             st.session_state["selected_saved_file"] = stored_uploads[-1].stored_name
             st.session_state["last_uploader_hash"] = uploader_hash
 
@@ -589,7 +602,11 @@ if st.session_state.get("team_data_scope") not in team_options:
     st.session_state["team_data_scope"] = team_options[0]
 team_scope = st.session_state["team_data_scope"]
 
-file_squads = {path: classify_squad_from_upload(path) for path in saved_files}
+upload_metadata = processed_upload_metadata(database)
+file_squads = {
+    path: upload_metadata.get(path.name, (classify_team_from_filename(path.name), VARSITY))[1]
+    for path in saved_files
+}
 team_paths = [
     path
     for path in saved_files
@@ -652,13 +669,13 @@ if selected_paths:
     dataset_hash.update(DATASET_SCHEMA_VERSION)
     dataset_hash.update(team_scope.encode("utf-8"))
     dataset_hash.update(squad_scope.encode("utf-8"))
+    dataset_hash.update(upload_revision.encode("utf-8"))
     for path in sorted(selected_paths, key=lambda item: item.name):
         dataset_hash.update(path.name.encode("utf-8"))
-        dataset_hash.update(path.read_bytes())
     combined_hash = dataset_hash.hexdigest()
 
     if st.session_state.get("uploaded_hash") != combined_hash:
-        combined = combine_saved_datasets(selected_paths, team_scope)
+        combined = load_processed_datasets(database, [path.name for path in selected_paths])
         event_values: set[str] = set()
         athlete_values: set[str] = set()
         for frame in (combined.records, combined.frame_attempts, combined.baker_frames, combined.team_games):

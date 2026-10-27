@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy import Boolean, DateTime, ForeignKey, LargeBinary, String, create_engine, delete, func, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, create_engine, delete, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -63,6 +63,90 @@ class AuthSessionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class ProcessedUploadRow(Base):
+    __tablename__ = "app_processed_uploads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    upload_id: Mapped[int] = mapped_column(
+        ForeignKey("app_uploads.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    parser_version: Mapped[str] = mapped_column(String(80), index=True)
+    source_digest: Mapped[str] = mapped_column(String(64), index=True)
+    team_group: Mapped[str] = mapped_column(String(32), index=True)
+    squad_group: Mapped[str] = mapped_column(String(32), index=True)
+    detected_format: Mapped[str] = mapped_column(String(32))
+    games_processed: Mapped[int] = mapped_column(Integer)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SpareOpportunityRow(Base):
+    __tablename__ = "app_spare_opportunities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    game_id: Mapped[str] = mapped_column(String(80), index=True)
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    game_date: Mapped[str] = mapped_column(String(80), default="")
+    frame: Mapped[int] = mapped_column(Integer)
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    pin_leave: Mapped[str] = mapped_column(String(80), default="")
+    is_single: Mapped[bool] = mapped_column(Boolean)
+    split: Mapped[bool] = mapped_column(Boolean)
+    made: Mapped[bool] = mapped_column(Boolean)
+    count_attempt: Mapped[bool] = mapped_column(Boolean)
+
+
+class FrameAttemptRow(Base):
+    __tablename__ = "app_frame_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    game_id: Mapped[str] = mapped_column(String(80), index=True)
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    game_date: Mapped[str] = mapped_column(String(80), default="")
+    game_type: Mapped[str] = mapped_column(String(80), default="")
+    frame: Mapped[int] = mapped_column(Integer)
+    ball: Mapped[str] = mapped_column(String(16))
+    pins: Mapped[int] = mapped_column(Integer)
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    is_strike: Mapped[bool] = mapped_column(Boolean)
+
+
+class BakerFrameRow(Base):
+    __tablename__ = "app_baker_frames"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    game_id: Mapped[str] = mapped_column(String(80), index=True)
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    game_date: Mapped[str] = mapped_column(String(80), default="")
+    game_type: Mapped[str] = mapped_column(String(80), default="")
+    frame: Mapped[int] = mapped_column(Integer)
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    points: Mapped[int] = mapped_column(Integer)
+
+
+class TeamGameRow(Base):
+    __tablename__ = "app_team_games"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    game_id: Mapped[str] = mapped_column(String(80), index=True)
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    game_date: Mapped[str] = mapped_column(String(80), default="")
+    game_type: Mapped[str] = mapped_column(String(80), default="")
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    score: Mapped[int] = mapped_column(Integer)
+
+
 @dataclass(frozen=True)
 class AppUser:
     id: int
@@ -79,6 +163,7 @@ class AppUser:
 
 @dataclass(frozen=True)
 class StoredUpload:
+    id: int
     original_name: str
     stored_name: str
     digest: str
@@ -111,6 +196,11 @@ class AppDatabase:
             "app_users": "app_users_id_seq",
             "app_uploads": "app_uploads_id_seq",
             "app_auth_sessions": "app_auth_sessions_id_seq",
+            "app_processed_uploads": "app_processed_uploads_id_seq",
+            "app_spare_opportunities": "app_spare_opportunities_id_seq",
+            "app_frame_attempts": "app_frame_attempts_id_seq",
+            "app_baker_frames": "app_baker_frames_id_seq",
+            "app_team_games": "app_team_games_id_seq",
         }
         with self.engine.begin() as connection:
             for table_name, sequence_name in sequence_tables.items():
@@ -360,6 +450,16 @@ class AppDatabase:
             rows = session.scalars(select(UploadRow).order_by(UploadRow.updated_at.desc())).all()
             return [upload_from_row(row) for row in rows]
 
+    def upload_revision(self) -> str:
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(UploadRow.id, UploadRow.digest, UploadRow.updated_at).order_by(UploadRow.id)
+            ).all()
+        revision = hashlib.sha256()
+        for upload_id, digest, updated_at in rows:
+            revision.update(f"{upload_id}:{digest}:{updated_at.isoformat()}".encode("utf-8"))
+        return revision.hexdigest()
+
     def save_uploads(self, actor: AppUser, uploads: list[tuple[str, bytes]]) -> list[StoredUpload]:
         require_admin(actor)
         now = utc_now()
@@ -397,7 +497,11 @@ class AppDatabase:
     def delete_upload(self, actor: AppUser, stored_name: str) -> bool:
         require_admin(actor)
         with Session(self.engine) as session:
-            result = session.execute(delete(UploadRow).where(UploadRow.stored_name == stored_name))
+            upload_id = session.scalar(select(UploadRow.id).where(UploadRow.stored_name == stored_name))
+            if upload_id is None:
+                return False
+            self._delete_processed_upload(session, upload_id)
+            result = session.execute(delete(UploadRow).where(UploadRow.id == upload_id))
             session.commit()
             return bool(result.rowcount)
 
@@ -405,9 +509,23 @@ class AppDatabase:
         require_admin(actor)
         with Session(self.engine) as session:
             count = int(session.scalar(select(func.count()).select_from(UploadRow)) or 0)
+            for model in (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow):
+                session.execute(delete(model))
+            session.execute(delete(ProcessedUploadRow))
             session.execute(delete(UploadRow))
             session.commit()
             return count
+
+    @staticmethod
+    def _delete_processed_upload(session: Session, upload_id: int) -> None:
+        dataset_id = session.scalar(
+            select(ProcessedUploadRow.id).where(ProcessedUploadRow.upload_id == upload_id)
+        )
+        if dataset_id is None:
+            return
+        for model in (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow):
+            session.execute(delete(model).where(model.dataset_id == dataset_id))
+        session.execute(delete(ProcessedUploadRow).where(ProcessedUploadRow.id == dataset_id))
 
     @staticmethod
     def _active_admin_count(session: Session) -> int:
@@ -492,6 +610,7 @@ def user_from_row(row: UserRow) -> AppUser:
 
 def upload_from_row(row: UploadRow) -> StoredUpload:
     return StoredUpload(
+        id=row.id,
         original_name=row.original_name,
         stored_name=row.stored_name,
         digest=row.digest,
