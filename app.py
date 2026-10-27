@@ -52,11 +52,11 @@ from src.storage import (
     uploaded_csv_label,
 )
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
-from src.report import add_team_game_score_columns, append_event_total_row, build_summary_workbook
+from src.report import add_team_game_score_columns, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
-DATASET_SCHEMA_VERSION = b"baker-tenth-fill-spares-v15"
+DATASET_SCHEMA_VERSION = b"persisted-report-aggregates-v16"
 SHOW_ATTEMPT_DETAIL = False
 AUTH_COOKIE_NAME = "ltu_spare_auth"
 AUTH_SESSION_DAYS = 30
@@ -67,6 +67,8 @@ REPORT_STATE_KEYS = (
     "frame_attempts",
     "baker_frames",
     "team_games",
+    "summary_rows",
+    "leave_rows",
     "source_files",
     "team_scope",
     "uploaded_hash",
@@ -139,7 +141,7 @@ def _database_url() -> str:
 
 
 @st.cache_resource
-def _get_database(url: str) -> AppDatabase:
+def _get_database(url: str, schema_version: str) -> AppDatabase:
     database = AppDatabase(url)
     database.initialize()
     return database
@@ -148,7 +150,7 @@ def _get_database(url: str) -> AppDatabase:
 @st.cache_resource(show_spinner=False, max_entries=6)
 def _cached_processed_datasets(
     _database: AppDatabase,
-    upload_revision: str,
+    processed_revision: str,
     stored_names: tuple[str, ...],
 ):
     """Reuse processed rows while the uploaded-file revision is unchanged."""
@@ -503,7 +505,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 try:
-    database = _get_database(_database_url())
+    database = _get_database(_database_url(), DATASET_SCHEMA_VERSION.decode("ascii"))
 except RuntimeError as exc:
     st.title("LTU Spare Conversion Report")
     st.error(str(exc))
@@ -545,6 +547,7 @@ parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
 processed_dataset_revision = f"{parser_version}:{upload_revision}"
 if st.session_state.get("processed_dataset_revision") != processed_dataset_revision:
     ensure_processed_datasets(database, parser_version)
+    _cached_processed_datasets.clear()
     st.session_state["processed_dataset_revision"] = processed_dataset_revision
 if (
     st.session_state.get("synced_upload_revision") != upload_revision
@@ -568,6 +571,10 @@ if "baker_frames" not in st.session_state:
     st.session_state["baker_frames"] = None
 if "team_games" not in st.session_state:
     st.session_state["team_games"] = None
+if "summary_rows" not in st.session_state:
+    st.session_state["summary_rows"] = None
+if "leave_rows" not in st.session_state:
+    st.session_state["leave_rows"] = None
 if "source_files" not in st.session_state:
     st.session_state["source_files"] = []
 if "team_scope" not in st.session_state:
@@ -706,12 +713,15 @@ if selected_paths:
     if st.session_state.get("uploaded_hash") != combined_hash:
         combined = _cached_processed_datasets(
             database,
-            upload_revision,
+            processed_dataset_revision,
             tuple(path.name for path in selected_paths),
         )
         event_values: set[str] = set()
         athlete_values: set[str] = set()
-        for frame in (combined.records, combined.frame_attempts, combined.baker_frames, combined.team_games):
+        for frame in (
+            combined.summary_rows,
+            combined.leave_rows,
+        ):
             if not frame.empty and "event" in frame.columns:
                 event_values.update(frame["event"].dropna().astype(str))
             if not frame.empty and "athlete" in frame.columns:
@@ -726,151 +736,110 @@ if selected_paths:
         st.session_state["frame_attempts"] = combined.frame_attempts.copy()
         st.session_state["baker_frames"] = combined.baker_frames.copy()
         st.session_state["team_games"] = combined.team_games.copy()
+        st.session_state["summary_rows"] = combined.summary_rows.copy()
+        st.session_state["leave_rows"] = combined.leave_rows.copy()
         st.session_state["source_files"] = combined.source_files
         st.session_state["team_scope"] = team_scope
         st.session_state["uploaded_hash"] = combined_hash
 else:
     _clear_report_state()
 
-def _build_summary_preview(
-    records: pd.DataFrame,
-    frame_attempts: pd.DataFrame | None,
-    baker_frames: pd.DataFrame | None,
-    team_games: pd.DataFrame | None,
+SUMMARY_COLUMNS = [
+    "Name",
+    "Single-Pin Made",
+    "Single-Pin Attempts",
+    "Single-Pin %",
+    "Multi-Pin Made",
+    "Multi-Pin Attempts",
+    "Multi-Pin %",
+    "Strikes",
+    "Strike Attempts",
+    "Strike %",
+    "Baker Pts",
+    "Baker Frames",
+    "Baker Avg",
+    "Average",
+]
+
+
+def _build_summary_preview_from_aggregates(
+    summary_rows: pd.DataFrame | None,
     athlete_filter: str | None = None,
     group_by_event_for_athlete: bool = False,
     include_total_row: bool = True,
 ) -> pd.DataFrame:
-    no_records = records is None or records.empty
-    no_attempts = frame_attempts is None or frame_attempts.empty
-    no_baker = baker_frames is None or baker_frames.empty
-    no_team_games = team_games is None or team_games.empty
-    if no_records and no_attempts and no_baker and no_team_games:
-        return pd.DataFrame(
-            columns=[
-                "Name",
-                "Single-Pin Made",
-                "Single-Pin Attempts",
-                "Single-Pin %",
-                "Multi-Pin Made",
-                "Multi-Pin Attempts",
-                "Multi-Pin %",
-                "Strikes",
-                "Strike Attempts",
-                "Strike %",
-                "Baker Pts",
-                "Baker Frames",
-                "Baker Avg",
-                "Average",
-            ]
-        )
+    if summary_rows is None or summary_rows.empty:
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
-    rows: list[dict[str, object]] = []
-
+    data = summary_rows.copy()
     if athlete_filter is not None:
-        athlete_records = records[records["athlete"] == athlete_filter].copy()
-        if group_by_event_for_athlete:
-            event_names = set(athlete_records["event"].dropna().astype(str))
-            for frame in (frame_attempts, baker_frames, team_games):
-                if frame is not None and not frame.empty:
-                    athlete_frame = frame[frame["athlete"] == athlete_filter]
-                    event_names.update(athlete_frame["event"].dropna().astype(str))
-            buckets = sorted(event_names)
-        else:
-            buckets = [None]
-        for event_bucket in buckets:
-            subset = athlete_records.copy() if event_bucket is None else athlete_records[athlete_records["event"] == event_bucket].copy()
-            label = str(event_bucket) if event_bucket is not None else athlete_filter
-            row_data = _build_summary_row(
-                label=label,
-                athlete=athlete_filter,
-                records_subset=subset,
-                frame_attempts=frame_attempts,
-                baker_frames=baker_frames,
-                team_games=team_games,
-                event_bucket=event_bucket,
-            )
-            game_dates = list(subset["game_date"]) if "game_date" in subset.columns else []
-            for frame in (frame_attempts, baker_frames, team_games):
-                if frame is None or frame.empty or "game_date" not in frame.columns:
-                    continue
-                date_frame = frame[frame["athlete"] == athlete_filter]
-                if event_bucket is not None:
-                    date_frame = date_frame[date_frame["event"] == event_bucket]
-                game_dates.extend(date_frame["game_date"].tolist())
-            game_dates = pd.Series(game_dates, dtype="object")
-            parsed_dates = pd.to_datetime(game_dates, errors="coerce")
-            row_data["__sort_date"] = parsed_dates.min() if len(parsed_dates) and parsed_dates.notna().any() else pd.NaT
-            rows.append(row_data)
-        out = pd.DataFrame(rows)
-        if not out.empty:
-            out = out.sort_values(["__sort_date", "Name"], ascending=[True, True], na_position="last").reset_index(drop=True)
-            out = out.drop(columns=["__sort_date"])
-            if include_total_row:
-                out = _append_summary_total_row(out, team_games, athlete_filter)
-        return out
+        data = data[data["athlete"] == athlete_filter].copy()
+    if data.empty:
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
-    athlete_names: set[str] = set(records["athlete"].dropna().astype(str))
-    for frame in (frame_attempts, baker_frames, team_games):
-        if frame is not None and not frame.empty:
-            athlete_names.update(frame["athlete"].dropna().astype(str))
-    athletes = sorted(athlete_names)
-    for athlete in athletes:
-        subset = records[records["athlete"] == athlete]
-        rows.append(
-            _build_summary_row(
-                label=athlete,
-                athlete=athlete,
-                records_subset=subset,
-                frame_attempts=frame_attempts,
-                baker_frames=baker_frames,
-                team_games=team_games,
-                event_bucket=None,
-            )
-        )
+    sum_columns = [
+        "single_made",
+        "single_attempts",
+        "multi_made",
+        "multi_attempts",
+        "strikes",
+        "strike_attempts",
+        "baker_points",
+        "baker_frames",
+        "team_score_total",
+        "team_games",
+    ]
+    for column in sum_columns:
+        data[column] = pd.to_numeric(data[column], errors="coerce").fillna(0)
+    data["__sort_date"] = pd.to_datetime(
+        data["event_date"], errors="coerce", format="mixed"
+    )
 
-    return pd.DataFrame(rows)
+    group_column = "event" if athlete_filter is not None and group_by_event_for_athlete else "athlete"
+    grouped = (
+        data.groupby(group_column, dropna=False)
+        .agg(**{column: (column, "sum") for column in sum_columns}, __sort_date=("__sort_date", "min"))
+        .reset_index()
+        .rename(columns={group_column: "Name"})
+    )
+    grouped["Name"] = grouped["Name"].astype(str)
+    if group_column == "event":
+        grouped = grouped.sort_values(["__sort_date", "Name"], na_position="last")
+    else:
+        grouped = grouped.sort_values("Name")
+
+    out = _format_aggregate_summary(grouped)
+    if include_total_row:
+        totals = {column: data[column].sum() for column in sum_columns}
+        totals["Name"] = "Total"
+        out = pd.concat([out, _format_aggregate_summary(pd.DataFrame([totals]))], ignore_index=True)
+    return out.reset_index(drop=True)
 
 
-def _append_summary_total_row(
-    df: pd.DataFrame,
-    team_games: pd.DataFrame | None,
-    athlete: str,
-) -> pd.DataFrame:
-    if df.empty:
-        return df
+def _format_aggregate_summary(grouped: pd.DataFrame) -> pd.DataFrame:
+    def ratio(numerator: str, denominator: str) -> pd.Series:
+        denominator_values = grouped[denominator].where(grouped[denominator] != 0)
+        return grouped[numerator] / denominator_values
 
-    total_sp_made = int(df["Single-Pin Made"].sum())
-    total_sp_att = int(df["Single-Pin Attempts"].sum())
-    total_mp_made = int(df["Multi-Pin Made"].sum())
-    total_mp_att = int(df["Multi-Pin Attempts"].sum())
-    total_strikes = int(df["Strikes"].sum())
-    total_str_att = int(df["Strike Attempts"].sum())
-    total_bkr_pts = int(df["Baker Pts"].sum())
-    total_bkr_frames = int(df["Baker Frames"].sum())
-    average = None
-    if team_games is not None and not team_games.empty:
-        athlete_games = team_games[team_games["athlete"] == athlete]
-        average = athlete_games["score"].sum() / len(athlete_games) if len(athlete_games) else None
-
-    total_row = {
-        "Name": "Total",
-        "Single-Pin Made": total_sp_made,
-        "Single-Pin Attempts": total_sp_att,
-        "Single-Pin %": (total_sp_made / total_sp_att) if total_sp_att else None,
-        "Multi-Pin Made": total_mp_made,
-        "Multi-Pin Attempts": total_mp_att,
-        "Multi-Pin %": (total_mp_made / total_mp_att) if total_mp_att else None,
-        "Strikes": total_strikes,
-        "Strike Attempts": total_str_att,
-        "Strike %": (total_strikes / total_str_att) if total_str_att else None,
-        "Baker Pts": total_bkr_pts,
-        "Baker Frames": total_bkr_frames,
-        "Baker Avg": (total_bkr_pts / total_bkr_frames) if total_bkr_frames else None,
-        "Average": average,
-    }
-
-    return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+    return pd.DataFrame(
+        {
+            "Name": grouped["Name"],
+            "Single-Pin Made": grouped["single_made"].astype(int),
+            "Single-Pin Attempts": grouped["single_attempts"].astype(int),
+            "Single-Pin %": ratio("single_made", "single_attempts"),
+            "Multi-Pin Made": grouped["multi_made"].astype(int),
+            "Multi-Pin Attempts": grouped["multi_attempts"].astype(int),
+            "Multi-Pin %": ratio("multi_made", "multi_attempts"),
+            "Strikes": grouped["strikes"].astype(int),
+            "Strike Attempts": grouped["strike_attempts"].astype(int),
+            "Strike %": ratio("strikes", "strike_attempts"),
+            "Baker Pts": grouped["baker_points"].astype(int),
+            "Baker Frames": grouped["baker_frames"].astype(int),
+            "Baker Avg": ratio("baker_points", "baker_frames"),
+            "Average": ratio("team_score_total", "team_games"),
+        },
+        columns=SUMMARY_COLUMNS,
+    )
 
 
 def _build_strike_attempt_detail(frame_attempts: pd.DataFrame | None, athlete: str) -> pd.DataFrame:
@@ -898,105 +867,6 @@ def _build_strike_attempt_detail(frame_attempts: pd.DataFrame | None, athlete: s
     return detail[cols].reset_index(drop=True)
 
 
-def _build_summary_row(
-    label: str,
-    athlete: str,
-    records_subset: pd.DataFrame,
-    frame_attempts: pd.DataFrame | None,
-    baker_frames: pd.DataFrame | None,
-    team_games: pd.DataFrame | None,
-    event_bucket: str | None,
-) -> dict[str, object]:
-    subset = records_subset
-    multi = subset[~subset["is_single"]].copy()
-    single = subset[subset["is_single"]].copy()
-
-    multi_attempts = int(multi["count_attempt"].sum())
-    multi_made = int((multi["made"] & multi["count_attempt"]).sum())
-    single_attempts = int(single["count_attempt"].sum())
-    single_made = int((single["made"] & single["count_attempt"]).sum())
-    baker_points = 0
-    baker_count = 0
-    baker_avg = None
-    if baker_frames is not None and not baker_frames.empty:
-        baker_subset = baker_frames[baker_frames["athlete"] == athlete].copy()
-        if event_bucket is not None:
-            baker_subset = baker_subset[baker_subset["event"] == event_bucket].copy()
-        baker_count = int(len(baker_subset))
-        baker_points = int(baker_subset["points"].sum())
-        baker_avg = (baker_points / baker_count) if baker_count else None
-    strikes = 0
-    strike_attempts = 0
-    strike_pct = None
-    if frame_attempts is not None and not frame_attempts.empty:
-        strike_subset = frame_attempts[frame_attempts["athlete"] == athlete].copy()
-        if event_bucket is not None:
-            strike_subset = strike_subset[strike_subset["event"] == event_bucket].copy()
-        strike_attempts = int(len(strike_subset))
-        strikes = int(strike_subset["is_strike"].sum())
-        strike_pct = (strikes / strike_attempts) if strike_attempts else None
-    average = None
-    if team_games is not None and not team_games.empty:
-        team_subset = team_games[team_games["athlete"] == athlete].copy()
-        if event_bucket is not None:
-            team_subset = team_subset[team_subset["event"] == event_bucket].copy()
-        if not team_subset.empty:
-            average = team_subset["score"].sum() / len(team_subset)
-
-    return {
-        "Name": label,
-        "Single-Pin Made": single_made,
-        "Single-Pin Attempts": single_attempts,
-        "Single-Pin %": (single_made / single_attempts) if single_attempts else None,
-        "Multi-Pin Made": multi_made,
-        "Multi-Pin Attempts": multi_attempts,
-        "Multi-Pin %": (multi_made / multi_attempts) if multi_attempts else None,
-        "Strikes": strikes,
-        "Strike Attempts": strike_attempts,
-        "Strike %": strike_pct,
-        "Baker Pts": baker_points,
-        "Baker Frames": baker_count,
-        "Baker Avg": baker_avg,
-        "Average": average,
-    }
-
-
-def _build_leave_preview(records: pd.DataFrame, athlete: str | None, is_single: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
-    section = records[records["is_single"] == is_single].copy()
-    if athlete is not None:
-        section = section[section["athlete"] == athlete].copy()
-    if section.empty:
-        empty = pd.DataFrame(columns=["Pin Leave", "Made", "Attempts", "Make %"])
-        return empty, empty
-
-    section["effective_made"] = (section["made"] & section["count_attempt"]).astype(int)
-    section["count_attempt"] = section["count_attempt"].astype(int)
-
-    grouped = (
-        section.groupby("pin_leave", dropna=False)
-        .agg(Made=("effective_made", "sum"), Attempts=("count_attempt", "sum"))
-        .reset_index()
-        .rename(columns={"pin_leave": "Pin Leave"})
-    )
-
-    grouped["Make %"] = grouped.apply(
-        lambda r: (r["Made"] / r["Attempts"]) if r["Attempts"] else None,
-        axis=1,
-    )
-    grouped = grouped[grouped["Attempts"] > 0].copy()
-    grouped = grouped.sort_values(["Attempts", "Pin Leave"], ascending=[False, True])
-
-    common = grouped[grouped["Attempts"] >= 10].copy()
-    common = common.sort_values(["Make %", "Attempts", "Pin Leave"], ascending=[True, False, True])
-    rare = grouped[grouped["Attempts"] < 10].copy()
-    rare = rare.sort_values(["Make %", "Attempts", "Pin Leave"], ascending=[True, False, True])
-    if common.empty and not rare.empty:
-        limited_common = rare[rare["Attempts"] > 1].copy()
-        one_attempt_rare = rare[rare["Attempts"] == 1].copy()
-        return limited_common, one_attempt_rare
-    return common, rare
-
-
 def _uses_limited_data_rule(common: pd.DataFrame, rare: pd.DataFrame) -> bool:
     return (not common.empty and (common["Attempts"] < 10).all()) or (
         common.empty and not rare.empty and (rare["Attempts"] == 1).all()
@@ -1014,28 +884,56 @@ def _rare_combinations_label(label: str, common: pd.DataFrame, rare: pd.DataFram
     return f"Rare {label} ({threshold})"
 
 
-def _build_leave_preview_all(records: pd.DataFrame, athlete: str | None, is_single: bool) -> pd.DataFrame:
-    section = records[records["is_single"] == is_single].copy()
+def _group_leave_aggregates(
+    leave_rows: pd.DataFrame | None,
+    athlete: str | None,
+    is_single: bool,
+) -> pd.DataFrame:
+    if leave_rows is None or leave_rows.empty:
+        return pd.DataFrame(columns=["Pin Leave", "Made", "Attempts", "Make %"])
+    section = leave_rows[leave_rows["is_single"] == is_single]
     if athlete is not None:
-        section = section[section["athlete"] == athlete].copy()
+        section = section[section["athlete"] == athlete]
     if section.empty:
         return pd.DataFrame(columns=["Pin Leave", "Made", "Attempts", "Make %"])
-
-    section["effective_made"] = (section["made"] & section["count_attempt"]).astype(int)
-    section["count_attempt"] = section["count_attempt"].astype(int)
-
     grouped = (
         section.groupby("pin_leave", dropna=False)
-        .agg(Made=("effective_made", "sum"), Attempts=("count_attempt", "sum"))
+        .agg(Made=("made", "sum"), Attempts=("attempts", "sum"))
         .reset_index()
         .rename(columns={"pin_leave": "Pin Leave"})
     )
-    grouped["Make %"] = grouped.apply(
-        lambda r: (r["Made"] / r["Attempts"]) if r["Attempts"] else None,
-        axis=1,
-    )
     grouped = grouped[grouped["Attempts"] > 0].copy()
-    return grouped.sort_values(["Make %", "Attempts", "Pin Leave"], ascending=[True, False, True])
+    grouped["Make %"] = grouped["Made"] / grouped["Attempts"]
+    return grouped
+
+
+def _build_leave_preview_from_aggregates(
+    leave_rows: pd.DataFrame | None,
+    athlete: str | None,
+    is_single: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    grouped = _group_leave_aggregates(leave_rows, athlete, is_single)
+    if grouped.empty:
+        return grouped, grouped
+    common = grouped[grouped["Attempts"] >= 10].copy()
+    common = common.sort_values(["Make %", "Attempts", "Pin Leave"], ascending=[True, False, True])
+    rare = grouped[grouped["Attempts"] < 10].copy()
+    rare = rare.sort_values(["Make %", "Attempts", "Pin Leave"], ascending=[True, False, True])
+    if common.empty and not rare.empty:
+        return rare[rare["Attempts"] > 1].copy(), rare[rare["Attempts"] == 1].copy()
+    return common, rare
+
+
+def _build_leave_preview_all_from_aggregates(
+    leave_rows: pd.DataFrame | None,
+    athlete: str | None,
+    is_single: bool,
+) -> pd.DataFrame:
+    grouped = _group_leave_aggregates(leave_rows, athlete, is_single)
+    return grouped.sort_values(
+        ["Make %", "Attempts", "Pin Leave"],
+        ascending=[True, False, True],
+    )
 
 
 def _read_csv_with_fallback_local(csv_bytes: bytes, header: int | None = 0) -> pd.DataFrame:
@@ -1662,14 +1560,14 @@ if records is not None:
     frame_attempts = st.session_state.get("frame_attempts")
     baker_frames = st.session_state.get("baker_frames")
     team_games = st.session_state.get("team_games")
-    event_sources = []
-    for frame in (records, frame_attempts, baker_frames, team_games):
-        if frame is not None and not frame.empty:
-            event_sources.append(frame[["event", "game_date"]])
-    if event_sources:
-        event_table = pd.concat(event_sources, ignore_index=True).dropna(subset=["event"]).copy()
+    summary_rows = st.session_state.get("summary_rows")
+    leave_rows = st.session_state.get("leave_rows")
+    if summary_rows is not None and not summary_rows.empty:
+        event_table = summary_rows[["event", "event_date"]].dropna(subset=["event"]).copy()
         event_table["event"] = event_table["event"].astype(str)
-        event_table["__date"] = pd.to_datetime(event_table["game_date"], errors="coerce")
+        event_table["__date"] = pd.to_datetime(
+            event_table["event_date"], errors="coerce", format="mixed"
+        )
         event_order = (
             event_table.groupby("event", dropna=False)["__date"]
             .min()
@@ -1679,10 +1577,11 @@ if records is not None:
         event_values = event_order["event"].tolist()
     else:
         event_values = []
-    athlete_names: set[str] = set(records["athlete"].dropna().astype(str)) if not records.empty else set()
-    for frame in (frame_attempts, baker_frames, team_games):
-        if frame is not None and not frame.empty:
-            athlete_names.update(frame["athlete"].dropna().astype(str))
+    athlete_names: set[str] = (
+        set(summary_rows["athlete"].dropna().astype(str))
+        if summary_rows is not None and not summary_rows.empty
+        else set()
+    )
     athlete_values_all = sorted(athlete_names)
     athlete_options = ["All Athletes"] + athlete_values_all
     previous_event_filter = st.session_state.pop("event_filter", None)
@@ -1725,6 +1624,8 @@ if records is not None:
     frame_attempts_event = frame_attempts.copy() if frame_attempts is not None else None
     baker_frames_event = baker_frames.copy() if baker_frames is not None else None
     team_games_event = team_games.copy() if team_games is not None else None
+    summary_rows_event = summary_rows.copy() if summary_rows is not None else None
+    leave_rows_event = leave_rows.copy() if leave_rows is not None else None
     if not all_events_selected:
         records_event = records_event[records_event["event"].isin(selected_events)].copy()
         if frame_attempts_event is not None:
@@ -1738,6 +1639,14 @@ if records is not None:
         if team_games_event is not None:
             team_games_event = team_games_event[
                 team_games_event["event"].isin(selected_events)
+            ].copy()
+        if summary_rows_event is not None:
+            summary_rows_event = summary_rows_event[
+                summary_rows_event["event"].isin(selected_events)
+            ].copy()
+        if leave_rows_event is not None:
+            leave_rows_event = leave_rows_event[
+                leave_rows_event["event"].isin(selected_events)
             ].copy()
 
     report_source_files = tuple(st.session_state.get("source_files", []))
@@ -1766,17 +1675,12 @@ if records is not None:
         download_help = ""
 
     group_by_event_for_athlete = athlete_filter is not None
-    summary_preview = _build_summary_preview(
-        records_event,
-        frame_attempts_event,
-        baker_frames_event,
-        team_games_event,
+    summary_preview = _build_summary_preview_from_aggregates(
+        summary_rows_event,
         athlete_filter=athlete_filter,
         group_by_event_for_athlete=group_by_event_for_athlete,
         include_total_row=True,
     )
-    if athlete_filter is None:
-        summary_preview = append_event_total_row(summary_preview, team_games_event)
     if single_event_selected:
         summary_preview = add_team_game_score_columns(
             summary_preview,
@@ -1888,11 +1792,19 @@ if records is not None:
             )
 
         if single_event_mode:
-            single_all = _build_leave_preview_all(records_event, athlete_filter, is_single=True)
-            multi_all = _build_leave_preview_all(records_event, athlete_filter, is_single=False)
+            single_all = _build_leave_preview_all_from_aggregates(
+                leave_rows_event, athlete_filter, is_single=True
+            )
+            multi_all = _build_leave_preview_all_from_aggregates(
+                leave_rows_event, athlete_filter, is_single=False
+            )
         else:
-            single_common, single_rare = _build_leave_preview(records_event, athlete_filter, is_single=True)
-            multi_common, multi_rare = _build_leave_preview(records_event, athlete_filter, is_single=False)
+            single_common, single_rare = _build_leave_preview_from_aggregates(
+                leave_rows_event, athlete_filter, is_single=True
+            )
+            multi_common, multi_rare = _build_leave_preview_from_aggregates(
+                leave_rows_event, athlete_filter, is_single=False
+            )
 
         if SHOW_ATTEMPT_DETAIL:
             tab_single, tab_multi, tab_strike = st.tabs(["Single Pin", "Multi Pin", "Strike"])

@@ -11,6 +11,7 @@ from src.dataset import (
     MEN,
     VARSITY,
     WOMEN,
+    build_report_aggregates,
     classify_squad,
     classify_squad_from_upload,
     classify_team_from_filename,
@@ -19,6 +20,83 @@ from src.dataset import (
     load_processed_datasets,
     processed_upload_metadata,
 )
+
+
+def test_build_report_aggregates_stores_additive_totals() -> None:
+    records = pd.DataFrame(
+        [
+            {
+                "event": "Event 1",
+                "athlete": "Alex",
+                "game_date": "2026-01-02",
+                "pin_leave": "10",
+                "is_single": True,
+                "made": True,
+                "count_attempt": True,
+            },
+            {
+                "event": "Event 1",
+                "athlete": "Alex",
+                "game_date": "2026-01-02",
+                "pin_leave": "3-6-10",
+                "is_single": False,
+                "made": False,
+                "count_attempt": True,
+            },
+        ]
+    )
+    frame_attempts = pd.DataFrame(
+        [
+            {
+                "event": "Event 1",
+                "athlete": "Alex",
+                "game_date": "2026-01-02",
+                "is_strike": True,
+            },
+            {
+                "event": "Event 1",
+                "athlete": "Alex",
+                "game_date": "2026-01-02",
+                "is_strike": False,
+            },
+        ]
+    )
+    baker_frames = pd.DataFrame(
+        [
+            {"event": "Event 1", "athlete": "Alex", "game_date": "2026-01-02", "points": 20},
+            {"event": "Event 1", "athlete": "Alex", "game_date": "2026-01-02", "points": 18},
+        ]
+    )
+    team_games = pd.DataFrame(
+        [
+            {"event": "Event 1", "athlete": "Alex", "game_date": "2026-01-02", "score": 200},
+            {"event": "Event 1", "athlete": "Alex", "game_date": "2026-01-02", "score": 210},
+        ]
+    )
+
+    summary, leaves = build_report_aggregates(
+        records, frame_attempts, baker_frames, team_games
+    )
+
+    assert summary.iloc[0].to_dict() == {
+        "event": "Event 1",
+        "event_date": "2026-01-02",
+        "athlete": "Alex",
+        "single_made": 1,
+        "single_attempts": 1,
+        "multi_made": 0,
+        "multi_attempts": 1,
+        "strikes": 1,
+        "strike_attempts": 2,
+        "baker_points": 38,
+        "baker_frames": 2,
+        "team_score_total": 410,
+        "team_games": 2,
+    }
+    assert leaves[["pin_leave", "made", "attempts"]].to_dict(orient="records") == [
+        {"pin_leave": "10", "made": 1, "attempts": 1},
+        {"pin_leave": "3-6-10", "made": 0, "attempts": 1},
+    ]
 
 
 def _write_team_csv(path: Path, athlete: str, event: str) -> None:
@@ -102,6 +180,12 @@ def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
     assert combined.records["athlete"].tolist() == ["Matt"]
     assert combined.records["made"].tolist() == [True]
     assert set(combined.records["team_group"]) == {MEN}
+    assert combined.summary_rows[["athlete", "single_made", "single_attempts"]].to_dict(
+        orient="records"
+    ) == [{"athlete": "Matt", "single_made": 1, "single_attempts": 1}]
+    assert combined.leave_rows[["athlete", "made", "attempts"]].to_dict(
+        orient="records"
+    ) == [{"athlete": "Matt", "made": 1, "attempts": 1}]
     assert processed_upload_metadata(database)[first.stored_name] == (MEN, VARSITY)
 
     replacement_csv = tmp_path / "replacement.csv"
@@ -115,6 +199,8 @@ def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
     assert ensure_processed_datasets(database, "test-v1") == 1
     replaced = load_processed_datasets(database, [replacement.stored_name])
     assert replaced.records["athlete"].tolist() == ["Matthew"]
+    assert replaced.summary_rows["athlete"].tolist() == ["Matthew"]
+    assert replaced.leave_rows["athlete"].tolist() == ["Matthew"]
     assert processed_upload_metadata(database).keys() == {replacement.stored_name}
 
     assert database.delete_upload(admin, replacement.stored_name)

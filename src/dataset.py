@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.orm import Session
 
 from src.auth import (
     AppDatabase,
+    AthleteAggregateRow,
     BakerFrameRow,
     FrameAttemptRow,
+    PinLeaveAggregateRow,
     ProcessedUploadRow,
     SpareOpportunityRow,
     TeamGameRow,
@@ -35,10 +37,14 @@ class CombinedDataset:
     frame_attempts: pd.DataFrame
     baker_frames: pd.DataFrame
     team_games: pd.DataFrame
+    summary_rows: pd.DataFrame
+    leave_rows: pd.DataFrame
     source_files: list[str]
 
 
-PROCESSED_MODELS = (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow)
+RAW_MODELS = (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow)
+AGGREGATE_MODELS = (AthleteAggregateRow, PinLeaveAggregateRow)
+PROCESSED_MODELS = RAW_MODELS + AGGREGATE_MODELS
 FRAME_COLUMNS = {
     SpareOpportunityRow: [
         "game_id", "event", "game_date", "frame", "athlete", "pin_leave",
@@ -53,6 +59,14 @@ FRAME_COLUMNS = {
     ],
     TeamGameRow: [
         "game_id", "event", "game_date", "game_type", "athlete", "score",
+    ],
+    AthleteAggregateRow: [
+        "event", "event_date", "athlete", "single_made", "single_attempts",
+        "multi_made", "multi_attempts", "strikes", "strike_attempts",
+        "baker_points", "baker_frames", "team_score_total", "team_games",
+    ],
+    PinLeaveAggregateRow: [
+        "event", "athlete", "pin_leave", "is_single", "made", "attempts",
     ],
 }
 
@@ -88,6 +102,9 @@ def ensure_processed_datasets(database: AppDatabase, parser_version: str) -> int
                     ProcessedUploadRow.id.is_(None),
                     ProcessedUploadRow.parser_version != parser_version,
                     ProcessedUploadRow.source_digest != UploadRow.digest,
+                    ~exists().where(
+                        AthleteAggregateRow.dataset_id == ProcessedUploadRow.id
+                    ),
                 )
             )
             .order_by(UploadRow.id)
@@ -104,20 +121,26 @@ def ensure_processed_datasets(database: AppDatabase, parser_version: str) -> int
             if existing is not None:
                 for model in PROCESSED_MODELS:
                     session.execute(delete(model).where(model.dataset_id == existing.id))
-                session.delete(existing)
-                session.flush()
-
-            dataset = ProcessedUploadRow(
-                upload_id=upload.id,
-                parser_version=parser_version,
-                source_digest=upload.digest,
-                team_group=team,
-                squad_group=squad,
-                detected_format=parsed.detected_format,
-                games_processed=parsed.games_processed,
-                processed_at=datetime.now(timezone.utc),
-            )
-            session.add(dataset)
+                dataset = existing
+                dataset.parser_version = parser_version
+                dataset.source_digest = upload.digest
+                dataset.team_group = team
+                dataset.squad_group = squad
+                dataset.detected_format = parsed.detected_format
+                dataset.games_processed = parsed.games_processed
+                dataset.processed_at = datetime.now(timezone.utc)
+            else:
+                dataset = ProcessedUploadRow(
+                    upload_id=upload.id,
+                    parser_version=parser_version,
+                    source_digest=upload.digest,
+                    team_group=team,
+                    squad_group=squad,
+                    detected_format=parsed.detected_format,
+                    games_processed=parsed.games_processed,
+                    processed_at=datetime.now(timezone.utc),
+                )
+                session.add(dataset)
             session.flush()
 
             for frame, model in (
@@ -125,6 +148,20 @@ def ensure_processed_datasets(database: AppDatabase, parser_version: str) -> int
                 (parsed.frame_attempts, FrameAttemptRow),
                 (parsed.baker_frames, BakerFrameRow),
                 (parsed.team_games, TeamGameRow),
+            ):
+                mappings = _frame_mappings(frame, FRAME_COLUMNS[model], dataset.id)
+                if mappings:
+                    session.bulk_insert_mappings(model, mappings)
+
+            summary_rows, leave_rows = build_report_aggregates(
+                parsed.records,
+                parsed.frame_attempts,
+                parsed.baker_frames,
+                parsed.team_games,
+            )
+            for frame, model in (
+                (summary_rows, AthleteAggregateRow),
+                (leave_rows, PinLeaveAggregateRow),
             ):
                 mappings = _frame_mappings(frame, FRAME_COLUMNS[model], dataset.id)
                 if mappings:
@@ -144,7 +181,7 @@ def processed_upload_metadata(database: AppDatabase) -> dict[str, tuple[str, str
 
 def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> CombinedDataset:
     if not stored_names:
-        return CombinedDataset(*(pd.DataFrame() for _ in range(4)), source_files=[])
+        return CombinedDataset(*(pd.DataFrame() for _ in range(6)), source_files=[])
 
     frame_rows: dict[type, list[dict[str, Any]]] = {model: [] for model in PROCESSED_MODELS}
     source_files: list[str] = []
@@ -176,7 +213,8 @@ def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> C
             for row in rows:
                 stored_name, source_key, team_group, squad_group = dataset_details[row.dataset_id]
                 item = {column: getattr(row, column) for column in FRAME_COLUMNS[model]}
-                item["game_id"] = f"{source_key}:{item['game_id']}"
+                if "game_id" in item:
+                    item["game_id"] = f"{source_key}:{item['game_id']}"
                 item["team_group"] = team_group
                 item["squad_group"] = squad_group
                 item["source_file"] = stored_name
@@ -187,6 +225,8 @@ def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> C
         frame_attempts=_stored_frame(frame_rows[FrameAttemptRow], FrameAttemptRow),
         baker_frames=_stored_frame(frame_rows[BakerFrameRow], BakerFrameRow),
         team_games=_stored_frame(frame_rows[TeamGameRow], TeamGameRow),
+        summary_rows=_stored_frame(frame_rows[AthleteAggregateRow], AthleteAggregateRow),
+        leave_rows=_stored_frame(frame_rows[PinLeaveAggregateRow], PinLeaveAggregateRow),
         source_files=source_files,
     )
 
@@ -211,6 +251,102 @@ def _frame_mappings(frame: pd.DataFrame, columns: list[str], dataset_id: int) ->
 def _stored_frame(rows: list[dict[str, Any]], model: type) -> pd.DataFrame:
     columns = FRAME_COLUMNS[model] + ["team_group", "squad_group", "source_file"]
     return pd.DataFrame(rows, columns=columns)
+
+
+def build_report_aggregates(
+    records: pd.DataFrame,
+    frame_attempts: pd.DataFrame,
+    baker_frames: pd.DataFrame,
+    team_games: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build additive report totals that can be combined without raw-delivery scans."""
+    pairs: set[tuple[str, str]] = set()
+    for frame in (records, frame_attempts, baker_frames, team_games):
+        if frame.empty or not {"event", "athlete"}.issubset(frame.columns):
+            continue
+        pairs.update(
+            (str(event), str(athlete))
+            for event, athlete in frame[["event", "athlete"]].dropna().itertuples(index=False)
+        )
+
+    summary_data: list[dict[str, Any]] = []
+    for event, athlete in sorted(pairs):
+        spare = _athlete_event_rows(records, event, athlete)
+        attempts = _athlete_event_rows(frame_attempts, event, athlete)
+        baker = _athlete_event_rows(baker_frames, event, athlete)
+        games = _athlete_event_rows(team_games, event, athlete)
+        single = spare[spare["is_single"]] if not spare.empty else spare
+        multi = spare[~spare["is_single"]] if not spare.empty else spare
+        date_values: list[Any] = []
+        for frame in (spare, attempts, baker, games):
+            if not frame.empty and "game_date" in frame.columns:
+                date_values.extend(frame["game_date"].tolist())
+        summary_data.append(
+            {
+                "event": event,
+                "event_date": _earliest_date(date_values),
+                "athlete": athlete,
+                "single_made": _made_count(single),
+                "single_attempts": _attempt_count(single),
+                "multi_made": _made_count(multi),
+                "multi_attempts": _attempt_count(multi),
+                "strikes": int(attempts["is_strike"].sum()) if not attempts.empty else 0,
+                "strike_attempts": int(len(attempts)),
+                "baker_points": int(baker["points"].sum()) if not baker.empty else 0,
+                "baker_frames": int(len(baker)),
+                "team_score_total": int(games["score"].sum()) if not games.empty else 0,
+                "team_games": int(len(games)),
+            }
+        )
+
+    leave_columns = ["event", "athlete", "pin_leave", "is_single", "made", "attempts"]
+    if records.empty:
+        leave_rows = pd.DataFrame(columns=leave_columns)
+    else:
+        leave_source = records.copy()
+        leave_source["made_count"] = (
+            leave_source["made"].astype(bool) & leave_source["count_attempt"].astype(bool)
+        ).astype(int)
+        leave_source["attempt_count"] = leave_source["count_attempt"].astype(int)
+        leave_rows = (
+            leave_source.groupby(
+                ["event", "athlete", "pin_leave", "is_single"],
+                dropna=False,
+            )
+            .agg(made=("made_count", "sum"), attempts=("attempt_count", "sum"))
+            .reset_index()
+        )
+        leave_rows = leave_rows[leave_rows["attempts"] > 0].reset_index(drop=True)
+    return pd.DataFrame(summary_data, columns=FRAME_COLUMNS[AthleteAggregateRow]), leave_rows
+
+
+def _athlete_event_rows(frame: pd.DataFrame, event: str, athlete: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    return frame[(frame["event"].astype(str) == event) & (frame["athlete"].astype(str) == athlete)]
+
+
+def _attempt_count(frame: pd.DataFrame) -> int:
+    return int(frame["count_attempt"].sum()) if not frame.empty else 0
+
+
+def _made_count(frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    return int((frame["made"].astype(bool) & frame["count_attempt"].astype(bool)).sum())
+
+
+def _earliest_date(values: list[Any]) -> str:
+    if not values:
+        return ""
+    source = pd.Series(values, dtype="object")
+    source = source[source.notna() & (source.astype(str).str.strip() != "")]
+    if source.empty:
+        return ""
+    parsed = pd.to_datetime(source, errors="coerce", format="mixed")
+    if parsed.notna().any():
+        return str(source.loc[parsed.idxmin()])
+    return str(source.iloc[0])
 
 
 def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDataset:
@@ -245,11 +381,18 @@ def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDatase
                 prepared["game_id"] = source_key + ":" + prepared["game_id"].astype(str)
             destination.append(prepared)
 
+    records = _concat_or_empty(record_frames)
+    frame_attempts = _concat_or_empty(attempt_frames)
+    baker = _concat_or_empty(baker_frames)
+    games = _concat_or_empty(team_game_frames)
+    summary_rows, leave_rows = build_report_aggregates(records, frame_attempts, baker, games)
     return CombinedDataset(
-        records=_concat_or_empty(record_frames),
-        frame_attempts=_concat_or_empty(attempt_frames),
-        baker_frames=_concat_or_empty(baker_frames),
-        team_games=_concat_or_empty(team_game_frames),
+        records=records,
+        frame_attempts=frame_attempts,
+        baker_frames=baker,
+        team_games=games,
+        summary_rows=summary_rows,
+        leave_rows=leave_rows,
         source_files=source_files,
     )
 
