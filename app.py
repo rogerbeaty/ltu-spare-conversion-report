@@ -447,15 +447,15 @@ st.markdown(
     div[data-testid="stDownloadButton"] button p {
       font-size: 0;
     }
-    div[data-testid="stMultiSelect"] [data-baseweb="tag"] {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"] {
       background-color: #1f5a94 !important;
       color: #ffffff !important;
     }
-    div[data-testid="stMultiSelect"] [data-baseweb="tag"]:hover {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"]:hover {
       background-color: #174573 !important;
     }
-    div[data-testid="stMultiSelect"] [data-baseweb="tag"] span,
-    div[data-testid="stMultiSelect"] [data-baseweb="tag"] svg {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"] span,
+    [data-testid="stMultiSelect"] [data-baseweb="tag"] svg {
       color: #ffffff !important;
       fill: #ffffff !important;
     }
