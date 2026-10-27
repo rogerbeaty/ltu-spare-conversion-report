@@ -583,7 +583,9 @@ if current_user.is_admin:
             )
             st.session_state["synced_upload_revision"] = upload_revision
             st.session_state["selected_saved_file"] = stored_uploads[-1].stored_name
-            st.session_state["last_uploader_hash"] = uploader_hash
+            st.session_state["last_uploader_hash"] = None
+            st.session_state["uploader_key"] += 1
+            st.rerun()
 
 saved_files = list_uploaded_csvs(UPLOAD_DIR)
 saved_names = [path.name for path in saved_files]
@@ -622,37 +624,38 @@ if st.session_state.get("squad_data_scope") not in squad_options:
 squad_scope = st.session_state["squad_data_scope"]
 
 if current_user.is_admin:
-    saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
-    with saved_col:
-        selected_saved_file = st.selectbox(
-            "Manage saved file",
-            options=saved_options,
-            key="selected_saved_file",
-            format_func=lambda value: "No saved file selected"
-            if not value
-            else uploaded_csv_label(UPLOAD_DIR / value),
-        )
-    with delete_col:
-        st.write("")
-        st.write("")
-        if st.button("Delete saved file", disabled=not selected_saved_file):
-            database.delete_upload(current_user, selected_saved_file)
-            _reset_after_upload_change()
-            st.rerun()
-    with delete_all_col:
-        st.write("")
-        st.write("")
-        with st.popover(
-            "Delete all data",
-            disabled=not saved_files,
-            use_container_width=True,
-        ):
-            st.warning("This permanently deletes every saved CSV and clears the report.")
-            if st.button("Confirm delete all data", type="primary", use_container_width=True):
-                deleted_count = database.delete_all_uploads(current_user)
+    with st.expander("Manage uploaded data", expanded=False):
+        saved_col, delete_col, delete_all_col = st.columns([4, 1, 1])
+        with saved_col:
+            selected_saved_file = st.selectbox(
+                "Saved file",
+                options=saved_options,
+                key="selected_saved_file",
+                format_func=lambda value: "No saved file selected"
+                if not value
+                else uploaded_csv_label(UPLOAD_DIR / value),
+            )
+        with delete_col:
+            st.write("")
+            st.write("")
+            if st.button("Delete saved file", disabled=not selected_saved_file):
+                database.delete_upload(current_user, selected_saved_file)
                 _reset_after_upload_change()
-                st.session_state["deleted_upload_count"] = deleted_count
                 st.rerun()
+        with delete_all_col:
+            st.write("")
+            st.write("")
+            with st.popover(
+                "Delete all data",
+                disabled=not saved_files,
+                use_container_width=True,
+            ):
+                st.warning("This permanently deletes every saved CSV and clears the report.")
+                if st.button("Confirm delete all data", type="primary", use_container_width=True):
+                    deleted_count = database.delete_all_uploads(current_user)
+                    _reset_after_upload_change()
+                    st.session_state["deleted_upload_count"] = deleted_count
+                    st.rerun()
 
 deleted_upload_count = st.session_state.pop("deleted_upload_count", None)
 if deleted_upload_count is not None:
