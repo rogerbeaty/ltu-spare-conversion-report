@@ -155,17 +155,32 @@ def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> C
             .where(UploadRow.stored_name.in_(stored_names))
             .order_by(UploadRow.updated_at.desc())
         ).all()
+        dataset_details: dict[int, tuple[str, str, str, str]] = {}
         for dataset, stored_name in datasets:
             source_files.append(stored_name)
             source_key = stored_name.partition("__")[0][:12]
-            for model in PROCESSED_MODELS:
-                for row in session.scalars(select(model).where(model.dataset_id == dataset.id)):
-                    item = {column: getattr(row, column) for column in FRAME_COLUMNS[model]}
-                    item["game_id"] = f"{source_key}:{item['game_id']}"
-                    item["team_group"] = dataset.team_group
-                    item["squad_group"] = dataset.squad_group
-                    item["source_file"] = stored_name
-                    frame_rows[model].append(item)
+            dataset_details[dataset.id] = (
+                stored_name,
+                source_key,
+                dataset.team_group,
+                dataset.squad_group,
+            )
+
+        dataset_ids = list(dataset_details)
+        for model in PROCESSED_MODELS:
+            rows = session.scalars(
+                select(model)
+                .where(model.dataset_id.in_(dataset_ids))
+                .order_by(model.dataset_id, model.id)
+            )
+            for row in rows:
+                stored_name, source_key, team_group, squad_group = dataset_details[row.dataset_id]
+                item = {column: getattr(row, column) for column in FRAME_COLUMNS[model]}
+                item["game_id"] = f"{source_key}:{item['game_id']}"
+                item["team_group"] = team_group
+                item["squad_group"] = squad_group
+                item["source_file"] = stored_name
+                frame_rows[model].append(item)
 
     return CombinedDataset(
         records=_stored_frame(frame_rows[SpareOpportunityRow], SpareOpportunityRow),

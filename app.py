@@ -80,6 +80,7 @@ def _clear_report_state() -> None:
 
 def _reset_after_upload_change() -> None:
     _clear_report_state()
+    _cached_processed_datasets.clear()
     st.session_state["last_uploader_hash"] = None
     st.session_state["synced_upload_revision"] = None
     st.session_state["processed_dataset_revision"] = None
@@ -142,6 +143,16 @@ def _get_database(url: str) -> AppDatabase:
     database = AppDatabase(url)
     database.initialize()
     return database
+
+
+@st.cache_resource(show_spinner=False, max_entries=6)
+def _cached_processed_datasets(
+    _database: AppDatabase,
+    upload_revision: str,
+    stored_names: tuple[str, ...],
+):
+    """Reuse processed rows while the uploaded-file revision is unchanged."""
+    return load_processed_datasets(_database, list(stored_names))
 
 
 def _bootstrap_database(database: AppDatabase) -> bool:
@@ -693,7 +704,11 @@ if selected_paths:
     combined_hash = dataset_hash.hexdigest()
 
     if st.session_state.get("uploaded_hash") != combined_hash:
-        combined = load_processed_datasets(database, [path.name for path in selected_paths])
+        combined = _cached_processed_datasets(
+            database,
+            upload_revision,
+            tuple(path.name for path in selected_paths),
+        )
         event_values: set[str] = set()
         athlete_values: set[str] = set()
         for frame in (combined.records, combined.frame_attempts, combined.baker_frames, combined.team_games):
