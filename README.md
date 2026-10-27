@@ -9,6 +9,7 @@ Authenticated Streamlit app that analyzes BowlSheet CSV exports and creates indi
 - Stores password hashes with Argon2. Plain-text passwords are never stored.
 - Generates a random temporary password for each new or reset account and requires it to be changed at next sign-in.
 - Lets signed-in users change their own password. An administrator can issue a temporary password when a user cannot sign in.
+- Keeps users signed in across browser refreshes for up to 30 days. Signing out, changing or resetting a password, deactivating an account, or deleting an account revokes its active sessions.
 - Lets you reopen or delete previously uploaded data from the app.
 - Provides a two-step **Delete all data** control to remove every saved upload and reset the report.
 - Combines all saved Men's files or all saved Women's files into one selected team view.

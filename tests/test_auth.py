@@ -38,11 +38,24 @@ def test_authenticate_and_force_password_change(database: AppDatabase, admin) ->
     authenticated = database.authenticate("BOWLER@LTU.EDU", "TemporaryPass1!")
     assert authenticated == user
     assert authenticated.must_change_password is True
+    token, expires_at = database.create_auth_session(authenticated)
+    assert expires_at.tzinfo is not None
+    assert database.authenticate_session(token) == authenticated
 
     changed = database.change_password(authenticated, "TemporaryPass1!", "PermanentPass2!")
     assert changed.must_change_password is False
+    assert database.authenticate_session(token) is None
     assert database.authenticate("bowler@ltu.edu", "PermanentPass2!") is not None
     assert database.authenticate("bowler@ltu.edu", "TemporaryPass1!") is None
+
+
+def test_auth_session_can_be_revoked(database: AppDatabase, admin) -> None:
+    token, _ = database.create_auth_session(admin)
+
+    assert database.authenticate_session(token) == admin
+    database.revoke_auth_session(token)
+    assert database.authenticate_session(token) is None
+    assert database.authenticate_session("invalid") is None
 
 
 def test_create_user_rejects_duplicate_email_case_insensitively(database: AppDatabase, admin) -> None:
@@ -135,8 +148,10 @@ def test_admin_reset_password_requires_change(database: AppDatabase, admin) -> N
         USER,
         password="TemporaryPass1!",
     )
+    token, _ = database.create_auth_session(user)
     temporary_password = database.reset_password(admin, user.id)
 
     authenticated = database.authenticate(user.email, temporary_password)
     assert authenticated is not None
     assert authenticated.must_change_password is True
+    assert database.authenticate_session(token) is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from io import BytesIO
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import re
 
 import pandas as pd
+import extra_streamlit_components as stx
 import streamlit as st
 
 from src.auth import (
@@ -55,6 +57,8 @@ UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
 DATASET_SCHEMA_VERSION = b"team-name-squad-filter-v13"
 SHOW_ATTEMPT_DETAIL = False
+AUTH_COOKIE_NAME = "ltu_spare_auth"
+AUTH_SESSION_DAYS = 30
 REPORT_STATE_KEYS = (
     "athlete_pdf_zip_bytes",
     "status",
@@ -140,19 +144,89 @@ def _bootstrap_database(database: AppDatabase) -> bool:
     return True
 
 
-def _logout() -> None:
+def _cookie_is_secure() -> bool:
+    try:
+        return str(st.context.url).startswith("https://")
+    except Exception:
+        return Path("/mount/src").exists()
+
+
+def _read_auth_token() -> str | None:
+    token = st.session_state.get("auth_session_token")
+    if token:
+        return str(token)
+    if st.session_state.get("ignore_auth_cookie"):
+        return None
+    try:
+        token = st.context.cookies.get(AUTH_COOKIE_NAME)
+    except Exception:
+        token = None
+    return str(token) if token else None
+
+
+def _set_auth_cookie(token: str, expires_at: datetime) -> None:
+    cookie_manager.set(
+        AUTH_COOKIE_NAME,
+        token,
+        key=f"set_auth_cookie_{st.session_state.get('auth_cookie_revision', 0)}",
+        path="/",
+        expires_at=expires_at,
+        max_age=AUTH_SESSION_DAYS * 24 * 60 * 60,
+        secure=_cookie_is_secure(),
+        same_site="strict",
+    )
+
+
+def _start_auth_session(database: AppDatabase, user: AppUser) -> None:
+    token, expires_at = database.create_auth_session(
+        user,
+        lifetime=timedelta(days=AUTH_SESSION_DAYS),
+    )
+    st.session_state["authenticated_user_id"] = user.id
+    st.session_state["auth_session_token"] = token
+    st.session_state.pop("ignore_auth_cookie", None)
+    st.session_state["auth_cookie_revision"] = st.session_state.get("auth_cookie_revision", 0) + 1
+    _set_auth_cookie(token, expires_at)
+
+
+def _logout(database: AppDatabase) -> None:
+    token = _read_auth_token()
+    database.revoke_auth_session(token)
     st.session_state.pop("authenticated_user_id", None)
+    st.session_state.pop("auth_session_token", None)
     st.session_state.pop("application_section", None)
+    st.session_state["ignore_auth_cookie"] = True
+    st.session_state["auth_cookie_revision"] = st.session_state.get("auth_cookie_revision", 0) + 1
+    cookie_manager.set(
+        AUTH_COOKIE_NAME,
+        "",
+        key=f"clear_auth_cookie_{st.session_state['auth_cookie_revision']}",
+        path="/",
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        max_age=0,
+        secure=_cookie_is_secure(),
+        same_site="strict",
+    )
     _clear_report_state()
 
 
 def _render_login(database: AppDatabase) -> AppUser:
+    token = _read_auth_token()
+    if token:
+        user = database.authenticate_session(token)
+        if user is not None:
+            st.session_state["authenticated_user_id"] = user.id
+            st.session_state["auth_session_token"] = token
+            return user
+        _logout(database)
+
     user_id = st.session_state.get("authenticated_user_id")
     if user_id is not None:
         user = database.get_user(int(user_id))
         if user is not None and user.active:
+            _start_auth_session(database, user)
             return user
-        _logout()
+        _logout(database)
 
     st.title("LTU Spare Conversion Report")
     st.subheader("Sign in")
@@ -168,8 +242,8 @@ def _render_login(database: AppDatabase) -> AppUser:
         if user is None:
             st.error("The email or password is incorrect.")
         else:
-            st.session_state["authenticated_user_id"] = user.id
-            st.rerun()
+            _start_auth_session(database, user)
+            return user
     st.stop()
 
 
@@ -188,15 +262,16 @@ def _render_required_password_change(database: AppDatabase, user: AppUser) -> No
             st.error("The new passwords do not match.")
         else:
             try:
-                database.change_password(user, current_password, new_password)
+                updated_user = database.change_password(user, current_password, new_password)
             except UserInputError as exc:
                 st.error(str(exc))
             else:
+                _start_auth_session(database, updated_user)
                 st.success("Password updated.")
-                st.rerun()
+                return
     if st.button("Sign out"):
-        _logout()
-        st.rerun()
+        _logout(database)
+        st.stop()
     st.stop()
 
 
@@ -229,10 +304,11 @@ def _render_profile_menu(database: AppDatabase, user: AppUser, selected_section:
                 st.error("The new passwords do not match.")
             else:
                 try:
-                    database.change_password(user, current_password, new_password)
+                    updated_user = database.change_password(user, current_password, new_password)
                 except UserInputError as exc:
                     st.error(str(exc))
                 else:
+                    _start_auth_session(database, updated_user)
                     st.success("Password updated.")
         if user.is_admin:
             destination = "Report" if selected_section == "Admin" else "Admin"
@@ -240,8 +316,8 @@ def _render_profile_menu(database: AppDatabase, user: AppUser, selected_section:
                 st.session_state["application_section"] = destination
                 st.rerun()
         if st.button("Sign out", use_container_width=True):
-            _logout()
-            st.rerun()
+            _logout(database)
+            st.stop()
 
 
 def _render_admin_screen(database: AppDatabase, actor: AppUser) -> None:
@@ -341,6 +417,7 @@ def _render_admin_screen(database: AppDatabase, actor: AppUser) -> None:
                         st.rerun()
 
 st.set_page_config(page_title="LTU Spare Conversion Report", layout="wide")
+cookie_manager = stx.CookieManager(key="ltu_auth_cookie_manager")
 st.markdown(
     """
     <style>

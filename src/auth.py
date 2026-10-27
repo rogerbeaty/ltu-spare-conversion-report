@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import secrets
 import string
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -50,6 +51,16 @@ class UploadRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSessionRow(Base):
+    __tablename__ = "app_auth_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,7 @@ class AppDatabase:
         sequence_tables = {
             "app_users": "app_users_id_seq",
             "app_uploads": "app_uploads_id_seq",
+            "app_auth_sessions": "app_auth_sessions_id_seq",
         }
         with self.engine.begin() as connection:
             for table_name, sequence_name in sequence_tables.items():
@@ -143,6 +155,69 @@ class AppDatabase:
         with Session(self.engine) as session:
             row = session.get(UserRow, user_id)
             return user_from_row(row) if row is not None else None
+
+    def create_auth_session(
+        self,
+        user: AppUser,
+        *,
+        lifetime: timedelta = timedelta(days=30),
+    ) -> tuple[str, datetime]:
+        if not user.active:
+            raise AuthorizationError("This account is no longer active.")
+        if lifetime <= timedelta(0):
+            raise ValueError("Session lifetime must be positive.")
+        token = secrets.token_urlsafe(48)
+        now = utc_now()
+        expires_at = now + lifetime
+        with Session(self.engine) as session:
+            session.add(
+                AuthSessionRow(
+                    user_id=user.id,
+                    token_hash=session_token_hash(token),
+                    expires_at=expires_at,
+                    created_at=now,
+                )
+            )
+            session.commit()
+        return token, expires_at
+
+    def authenticate_session(self, token: str | None) -> AppUser | None:
+        if not token or len(token) < 32:
+            return None
+        with Session(self.engine) as session:
+            auth_session = session.scalar(
+                select(AuthSessionRow).where(AuthSessionRow.token_hash == session_token_hash(token))
+            )
+            if auth_session is None:
+                return None
+            if as_utc(auth_session.expires_at) <= utc_now():
+                session.delete(auth_session)
+                session.commit()
+                return None
+            user = session.get(UserRow, auth_session.user_id)
+            if user is None or not user.active:
+                session.delete(auth_session)
+                session.commit()
+                return None
+            return user_from_row(user)
+
+    def revoke_auth_session(self, token: str | None) -> None:
+        if not token:
+            return
+        with Session(self.engine) as session:
+            session.execute(
+                delete(AuthSessionRow).where(AuthSessionRow.token_hash == session_token_hash(token))
+            )
+            session.commit()
+
+    def revoke_user_sessions(self, user_id: int, *, session: Session | None = None) -> None:
+        statement = delete(AuthSessionRow).where(AuthSessionRow.user_id == user_id)
+        if session is not None:
+            session.execute(statement)
+            return
+        with Session(self.engine) as owned_session:
+            owned_session.execute(statement)
+            owned_session.commit()
 
     def list_users(self, actor: AppUser) -> list[AppUser]:
         require_admin(actor)
@@ -225,6 +300,8 @@ class AppDatabase:
             row.role = role
             row.active = active
             row.updated_at = utc_now()
+            if not active:
+                self.revoke_user_sessions(user_id, session=session)
             try:
                 session.commit()
             except IntegrityError as exc:
@@ -243,6 +320,7 @@ class AppDatabase:
                 return
             if row.role == ADMIN and row.active and self._active_admin_count(session) <= 1:
                 raise UserInputError("At least one active administrator is required.")
+            self.revoke_user_sessions(user_id, session=session)
             session.delete(row)
             session.commit()
 
@@ -256,6 +334,7 @@ class AppDatabase:
             row.password_hash = self.password_hasher.hash(temporary_password)
             row.must_change_password = True
             row.updated_at = utc_now()
+            self.revoke_user_sessions(user_id, session=session)
             session.commit()
         return temporary_password
 
@@ -271,6 +350,7 @@ class AppDatabase:
             row.password_hash = self.password_hasher.hash(new_password)
             row.must_change_password = False
             row.updated_at = utc_now()
+            self.revoke_user_sessions(user.id, session=session)
             session.commit()
             session.refresh(row)
             return user_from_row(row)
@@ -387,6 +467,16 @@ def validate_role(role: str) -> None:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def user_from_row(row: UserRow) -> AppUser:
