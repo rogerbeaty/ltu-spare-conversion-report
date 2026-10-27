@@ -82,6 +82,8 @@ def _reset_after_upload_change() -> None:
     _clear_report_state()
     st.session_state["last_uploader_hash"] = None
     st.session_state["synced_upload_revision"] = None
+    st.session_state["processed_dataset_revision"] = None
+    st.session_state["upload_metadata_revision"] = None
     st.session_state["event_filter_multi"] = []
     st.session_state["athlete_filter"] = "All Athletes"
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
@@ -527,9 +529,12 @@ if selected_page == "Admin":
     _render_admin_screen(database, current_user)
     st.stop()
 
-parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
-ensure_processed_datasets(database, parser_version)
 upload_revision = database.upload_revision()
+parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
+processed_dataset_revision = f"{parser_version}:{upload_revision}"
+if st.session_state.get("processed_dataset_revision") != processed_dataset_revision:
+    ensure_processed_datasets(database, parser_version)
+    st.session_state["processed_dataset_revision"] = processed_dataset_revision
 if (
     st.session_state.get("synced_upload_revision") != upload_revision
     or not UPLOAD_DIR.exists()
@@ -587,6 +592,9 @@ if current_user.is_admin:
             stored_uploads = database.save_uploads(current_user, upload_entries)
             ensure_processed_datasets(database, parser_version)
             upload_revision = database.upload_revision()
+            st.session_state["processed_dataset_revision"] = (
+                f"{parser_version}:{upload_revision}"
+            )
             sync_uploaded_csvs(
                 UPLOAD_DIR,
                 [(upload.stored_name, upload.content) for upload in database.list_uploads()],
@@ -613,7 +621,10 @@ if st.session_state.get("team_data_scope") not in team_options:
     st.session_state["team_data_scope"] = team_options[0]
 team_scope = st.session_state["team_data_scope"]
 
-upload_metadata = processed_upload_metadata(database)
+if st.session_state.get("upload_metadata_revision") != upload_revision:
+    st.session_state["upload_metadata"] = processed_upload_metadata(database)
+    st.session_state["upload_metadata_revision"] = upload_revision
+upload_metadata = st.session_state.get("upload_metadata", {})
 file_squads = {
     path: upload_metadata.get(path.name, (classify_team_from_filename(path.name), VARSITY))[1]
     for path in saved_files
@@ -690,15 +701,7 @@ if selected_paths:
                 event_values.update(frame["event"].dropna().astype(str))
             if not frame.empty and "athlete" in frame.columns:
                 athlete_values.update(frame["athlete"].dropna().astype(str))
-        athlete_pdf_zip_bytes = build_athlete_pdf_reports_zip(
-            team_scope,
-            combined.records,
-            combined.frame_attempts,
-            combined.baker_frames,
-            combined.team_games,
-        )
-
-        st.session_state["athlete_pdf_zip_bytes"] = athlete_pdf_zip_bytes
+        st.session_state["athlete_pdf_zip_bytes"] = None
         st.session_state["status"] = {
             "events_found": len(event_values),
             "athletes_found": len(athlete_values),
@@ -1210,7 +1213,7 @@ def _build_ball_by_ball_detail(
     return out.sort_values(sort_cols, ascending=[True] * len(sort_cols)).reset_index(drop=True)
 
 
-def _build_combined_ball_by_ball_detail(
+def _build_combined_ball_by_ball_detail_uncached(
     source_files: list[str],
     team_scope: str,
     selected_event: str,
@@ -1252,6 +1255,29 @@ def _build_combined_ball_by_ball_detail(
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
     return sort_ball_by_ball_detail(combined, include_athlete=include_athlete)
+
+
+@st.cache_data(show_spinner=False)
+def _build_combined_ball_by_ball_detail(
+    source_files: list[str],
+    team_scope: str,
+    selected_event: str,
+    selected_athlete: str,
+    include_event: bool = False,
+    include_athlete: bool = False,
+    team_vs_baker_view: bool = False,
+    include_bowler_metadata: bool = False,
+) -> pd.DataFrame:
+    return _build_combined_ball_by_ball_detail_uncached(
+        source_files,
+        team_scope,
+        selected_event,
+        selected_athlete,
+        include_event,
+        include_athlete,
+        team_vs_baker_view,
+        include_bowler_metadata,
+    )
 
 
 def _build_spare_attempt_detail(
@@ -1508,7 +1534,22 @@ def _render_team_baker_detail(detail: pd.DataFrame) -> None:
         )
 
 
-@st.cache_data(show_spinner=False)
+def _build_all_event_pdf_zip(
+    team: str,
+    records: pd.DataFrame,
+    frame_attempts: pd.DataFrame | None,
+    baker_frames: pd.DataFrame | None,
+    team_games: pd.DataFrame | None,
+) -> bytes:
+    return build_athlete_pdf_reports_zip(
+        team,
+        records,
+        frame_attempts,
+        baker_frames,
+        team_games,
+    )
+
+
 def _build_event_pdf_zip(
     team: str,
     event: str,
@@ -1522,7 +1563,7 @@ def _build_event_pdf_zip(
     del pdf_style_version
     frame_details: dict[str, pd.DataFrame] = {}
     for athlete in pdf_athlete_names(records, frame_attempts, baker_frames, team_games):
-        detail = _build_combined_ball_by_ball_detail(
+        detail = _build_combined_ball_by_ball_detail_uncached(
             list(source_files),
             team,
             selected_event=event,
@@ -1550,7 +1591,6 @@ def _build_event_pdf_zip(
     )
 
 
-@st.cache_data(show_spinner=False)
 def _build_individual_pdf(
     team: str,
     event: str,
@@ -1564,7 +1604,7 @@ def _build_individual_pdf(
     report_event = None if event == "All Events" else event
     frame_detail = None
     if report_event:
-        frame_detail = _build_combined_ball_by_ball_detail(
+        frame_detail = _build_combined_ball_by_ball_detail_uncached(
             list(source_files),
             team,
             selected_event=report_event,
@@ -1685,14 +1725,21 @@ if records is not None:
                 team_games_event["event"].isin(selected_events)
             ].copy()
 
+    report_source_files = tuple(st.session_state.get("source_files", []))
     if all_events_selected:
-        pdf_zip_bytes = st.session_state.get("athlete_pdf_zip_bytes")
+        pdf_zip_data = lambda: _build_all_event_pdf_zip(
+            team_scope,
+            records_event,
+            frame_attempts_event,
+            baker_frames_event,
+            team_games_event,
+        )
         download_help = "Download athlete PDF reports for all events"
     elif single_event_selected:
-        pdf_zip_bytes = _build_event_pdf_zip(
+        pdf_zip_data = lambda: _build_event_pdf_zip(
             team_scope,
             selected_event,
-            tuple(st.session_state.get("source_files", [])),
+            report_source_files,
             records_event,
             frame_attempts_event,
             baker_frames_event,
@@ -1700,7 +1747,7 @@ if records is not None:
         )
         download_help = f"Download athlete PDF reports for {selected_event}"
     else:
-        pdf_zip_bytes = None
+        pdf_zip_data = None
         download_help = ""
 
     group_by_event_for_athlete = athlete_filter is not None
@@ -1727,13 +1774,13 @@ if records is not None:
         with statistics_title_col:
             st.subheader("Bowler Statistics")
         with statistics_download_col:
-            individual_pdf_bytes = None
+            individual_pdf_data = None
             if athlete_filter is not None and (all_events_selected or single_event_selected):
-                individual_pdf_bytes = _build_individual_pdf(
+                individual_pdf_data = lambda: _build_individual_pdf(
                     team_scope,
                     selected_event,
                     athlete_filter,
-                    tuple(st.session_state.get("source_files", [])),
+                    report_source_files,
                     records_event,
                     frame_attempts_event,
                     baker_frames_event,
@@ -1741,35 +1788,42 @@ if records is not None:
                 )
             individual_col, excel_col, bulk_col = st.columns(3)
             with individual_col:
-                if individual_pdf_bytes is not None:
+                if individual_pdf_data is not None:
                     report_event = selected_event if single_event_selected else None
                     st.download_button(
                         label=f"Download PDF for {athlete_filter}",
-                        data=individual_pdf_bytes,
+                        data=individual_pdf_data,
                         file_name=athlete_report_filename(athlete_filter, report_event),
                         mime="application/pdf",
                         icon=":material/picture_as_pdf:",
                         help=f"Download the PDF report for {athlete_filter}",
+                        on_click="ignore",
                     )
             with excel_col:
                 if single_event_selected:
                     st.download_button(
                         label=f"Download {selected_event} Overall Summary as Excel",
-                        data=build_summary_workbook(summary_preview, team_scope, selected_event),
+                        data=lambda: build_summary_workbook(
+                            summary_preview,
+                            team_scope,
+                            selected_event,
+                        ),
                         file_name=_summary_excel_filename(team_scope, selected_event),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         icon=":material/table_view:",
                         help=f"Download the displayed Overall Summary for {selected_event}",
+                        on_click="ignore",
                     )
             with bulk_col:
-                if pdf_zip_bytes is not None:
+                if pdf_zip_data is not None:
                     st.download_button(
                         label=f"Download Athlete PDF Reports - {selected_event}",
-                        data=pdf_zip_bytes,
+                        data=pdf_zip_data,
                         file_name=_download_filename(team_scope, selected_event),
                         mime="application/zip",
                         icon=":material/folder_zip:",
                         help=download_help,
+                        on_click="ignore",
                     )
 
     if athlete_filter is not None:
