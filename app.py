@@ -87,6 +87,16 @@ def _reset_after_upload_change() -> None:
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
 
 
+@st.dialog("Delete all data")
+def _confirm_delete_all_data(database, current_user) -> None:
+    st.warning("This permanently deletes every saved CSV and clears the report.")
+    if st.button("Confirm delete all data", type="primary", use_container_width=True):
+        deleted_count = database.delete_all_uploads(current_user)
+        _reset_after_upload_change()
+        st.session_state["deleted_upload_count"] = deleted_count
+        st.rerun()
+
+
 def _download_filename(team: str, event: str) -> str:
     team_token = re.sub(r"[^a-z0-9]+", "_", team.casefold()).strip("_")
     if event == "All Events":
@@ -645,17 +655,12 @@ if current_user.is_admin:
         with delete_all_col:
             st.write("")
             st.write("")
-            with st.popover(
+            if st.button(
                 "Delete all data",
                 disabled=not saved_files,
                 use_container_width=True,
             ):
-                st.warning("This permanently deletes every saved CSV and clears the report.")
-                if st.button("Confirm delete all data", type="primary", use_container_width=True):
-                    deleted_count = database.delete_all_uploads(current_user)
-                    _reset_after_upload_change()
-                    st.session_state["deleted_upload_count"] = deleted_count
-                    st.rerun()
+                _confirm_delete_all_data(database, current_user)
 
 deleted_upload_count = st.session_state.pop("deleted_upload_count", None)
 if deleted_upload_count is not None:
