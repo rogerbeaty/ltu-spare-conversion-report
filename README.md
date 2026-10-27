@@ -27,7 +27,7 @@ Authenticated Streamlit app that analyzes BowlSheet CSV exports and creates indi
   - Made splits are included
   - Full-rack leave (`1-2-3-4-5-6-7-8-9-10`) is excluded
   - Foul markers (`F`, `FOUL`) are treated as 0 knocked pins
-  - 10th-frame special case implemented
+  - After a 10th-frame strike, a Ball2/Ball3 spare conversion counts only when made; a miss is treated as an excluded fill shot
   - Average uses the sum of `Frame10Score` for Team games divided by the athlete's Team games
   - Mixed-athlete Team games are credited to the athlete who started the game
   - Baker games never affect Average

@@ -90,9 +90,10 @@ Ignore fouls if identifiable:
 10th-frame special case:
 If frame10 ball1 is strike AND ball2 < 10 AND ball3 exists:
 - Treat ball2 as spare opportunity using ball2 leave string
-- Spare made when ball2 + ball3 == 10
+- Count the spare opportunity only when ball2 + ball3 == 10
+- If ball2 + ball3 != 10, treat ball3 as a fill shot and do not count a single-pin or multi-pin attempt
 - Split from ball2 split
-- Attribute the attempt/make to ball3 bowler
+- Attribute a made conversion to ball3 bowler
 
 Normalized record output (from parser):
 Each spare-opportunity record must be:

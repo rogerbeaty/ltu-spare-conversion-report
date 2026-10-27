@@ -180,6 +180,73 @@ def test_parse_format_b_counts_and_full_rack_exclusion() -> None:
     assert int(frame_attempts["is_strike"].sum()) >= 1
 
 
+def test_format_a_tenth_ball3_spares_count_only_when_made() -> None:
+    def tenth_row(ball2: int, ball3: int, leave: str) -> dict[str, object]:
+        return {
+            "Frame1Ball1Bowler": "Alex",
+            "Frame1Ball1": 10,
+            "Frame10Ball1Bowler": "Alex",
+            "Frame10Ball2Bowler": "Alex",
+            "Frame10Ball3Bowler": "Alex",
+            "Frame10Ball1": 10,
+            "Frame10Ball2": ball2,
+            "Frame10Ball3": ball3,
+            "Frame10Ball2Pins": leave,
+            "Frame10Ball2Split": 0,
+        }
+
+    df = pd.DataFrame(
+        [
+            tenth_row(9, 0, "10"),
+            tenth_row(7, 2, "3-6-10"),
+            tenth_row(9, 1, "10"),
+            tenth_row(7, 3, "3-6-10"),
+        ]
+    )
+
+    result = parse_bowlsheet_csv(df.to_csv(index=False).encode("utf-8"))
+
+    assert result.records["game_id"].tolist() == [2, 3]
+    assert result.records["made"].all()
+    assert result.records["count_attempt"].all()
+    assert result.records["is_single"].tolist() == [True, False]
+    example_attempts = result.frame_attempts[
+        (result.frame_attempts["game_id"] == 0) & (result.frame_attempts["frame"] == 10)
+    ]
+    assert example_attempts["ball"].tolist() == ["Ball1", "Ball2"]
+    assert example_attempts["is_strike"].tolist() == [True, False]
+
+
+def test_format_b_tenth_ball3_spares_count_only_when_made() -> None:
+    def tenth_row(ball2: int, ball3: int, leave: str) -> list[object]:
+        row: list[object] = [""] * 101
+        row[25:28] = ["Alex", "Alex", "Alex"]
+        row[77:80] = [10, ball2, ball3]
+        row[57] = 0
+        row[99] = leave
+        return row
+
+    df = pd.DataFrame(
+        [
+            tenth_row(9, 0, "10"),
+            tenth_row(7, 2, "3-6-10"),
+            tenth_row(9, 1, "10"),
+            tenth_row(7, 3, "3-6-10"),
+        ]
+    )
+    csv_bytes = df.to_csv(index=False, header=False).encode("utf-8")
+
+    result = parse_bowlsheet_csv(csv_bytes)
+
+    assert result.records["game_id"].tolist() == [2, 3]
+    assert result.records["made"].all()
+    assert result.records["count_attempt"].all()
+    assert result.records["is_single"].tolist() == [True, False]
+    example_attempts = result.frame_attempts[result.frame_attempts["game_id"] == 0]
+    assert example_attempts["ball"].tolist() == ["Ball1", "Ball2"]
+    assert example_attempts["is_strike"].tolist() == [True, False]
+
+
 def test_parse_format_b_drops_first_and_third_rows_when_first_row_empty() -> None:
     valid = [""] * 101
     for i in range(21):

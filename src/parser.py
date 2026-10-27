@@ -430,12 +430,11 @@ def _build_tenth_special(
         return None
 
     made = (ball2 + ball3) == 10
+    # A missed Ball3 conversion is a fill shot, not a spare attempt.
+    if not made:
+        return None
     is_single = ball2 == 9
     is_split = _to_bool(split) or _is_forced_split_leave(leave_str)
-
-    count_attempt = True
-    if not is_single and is_split and not made:
-        count_attempt = False
 
     return {
         "game_id": game_id,
@@ -447,7 +446,7 @@ def _build_tenth_special(
         "is_single": is_single,
         "split": is_split,
         "made": bool(made),
-        "count_attempt": count_attempt,
+        "count_attempt": True,
     }
 
 
