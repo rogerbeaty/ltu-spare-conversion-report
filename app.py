@@ -80,7 +80,6 @@ def _clear_report_state() -> None:
 
 def _reset_after_upload_change() -> None:
     _clear_report_state()
-    st.session_state["selected_saved_file"] = ""
     st.session_state["last_uploader_hash"] = None
     st.session_state["synced_upload_revision"] = None
     st.session_state["event_filter_multi"] = []

@@ -119,3 +119,13 @@ def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
 
     assert database.delete_upload(admin, replacement.stored_name)
     assert processed_upload_metadata(database) == {}
+
+    restored = database.save_uploads(
+        admin,
+        [("LTU-Mens-Varsity.csv", replacement_csv.read_bytes())],
+    )[0]
+    assert ensure_processed_datasets(database, "test-v1") == 1
+    assert not load_processed_datasets(database, [restored.stored_name]).records.empty
+    assert database.delete_all_uploads(admin) == 1
+    assert database.list_uploads() == []
+    assert processed_upload_metadata(database) == {}
