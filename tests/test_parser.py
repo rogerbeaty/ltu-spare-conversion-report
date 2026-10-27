@@ -247,6 +247,60 @@ def test_format_b_tenth_ball3_spares_count_only_when_made() -> None:
     assert example_attempts["is_strike"].tolist() == [True, False]
 
 
+def test_format_a_baker_tenth_fill_scores_only_made_spares() -> None:
+    def tenth_row(ball2: int, ball3: int) -> dict[str, object]:
+        return {
+            "GameType": "Baker",
+            "Frame1Ball1": None,
+            "Frame10Ball1Bowler": "Alex",
+            "Frame10Ball2Bowler": "Alex",
+            "Frame10Ball3Bowler": "Alex",
+            "Frame10Ball1": 10,
+            "Frame10Ball2": ball2,
+            "Frame10Ball3": ball3,
+        }
+
+    result = parse_bowlsheet_csv(
+        pd.DataFrame(
+            [
+                tenth_row(9, 0),
+                tenth_row(9, 1),
+                tenth_row(7, 2),
+                tenth_row(7, 3),
+            ]
+        ).to_csv(index=False).encode("utf-8")
+    )
+
+    points_by_game = result.baker_frames.groupby("game_id")["points"].apply(list).to_dict()
+    assert points_by_game == {0: [20], 1: [20, 19], 2: [20], 3: [20, 17]}
+
+
+def test_format_b_baker_tenth_fill_scores_only_made_spares() -> None:
+    def tenth_row(ball2: int, ball3: int) -> list[object]:
+        row: list[object] = [""] * 101
+        row[0] = "Test Event"
+        row[1] = "Baker"
+        row[25:28] = ["Alex", "Alex", "Alex"]
+        row[77:80] = [10, ball2, ball3]
+        return row
+
+    csv_bytes = pd.DataFrame(
+        [
+            tenth_row(9, 0),
+            tenth_row(9, 1),
+            tenth_row(7, 2),
+            tenth_row(7, 3),
+        ]
+    ).to_csv(
+        index=False,
+        header=False,
+    ).encode("utf-8")
+    result = parse_bowlsheet_csv(csv_bytes)
+
+    points_by_game = result.baker_frames.groupby("game_id")["points"].apply(list).to_dict()
+    assert points_by_game == {0: [20], 1: [20, 19], 2: [20], 3: [20, 17]}
+
+
 def test_parse_format_b_drops_first_and_third_rows_when_first_row_empty() -> None:
     valid = [""] * 101
     for i in range(21):
@@ -352,9 +406,9 @@ def test_baker_scoring_and_tenth_fill_rule() -> None:
     blake_points = int(baker[baker["athlete"] == "Blake"]["points"].sum())
     blake_count = int(len(baker[baker["athlete"] == "Blake"]))
 
-    # Row1 non-strike Ball3 by different bowler is ignored for Alex's 10th bonus attempt.
-    # Alex points: 75 (row1) + 39 (row2) + 40 (row3) = 154
-    assert alex_points == 154
+    # Row1's incomplete post-strike spare is an excluded fill, so no bonus
+    # Baker frame is added. Alex points: 68 (row1) + 39 (row2) + 40 (row3).
+    assert alex_points == 147
     # Blake only gets strike-fill credit on row2 and row3.
     assert blake_points == 40
     assert blake_count == 2

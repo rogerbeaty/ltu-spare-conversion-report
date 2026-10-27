@@ -55,7 +55,7 @@ from src.report import add_team_game_score_columns, append_event_total_row, buil
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
-DATASET_SCHEMA_VERSION = b"tenth-frame-fill-spares-v14"
+DATASET_SCHEMA_VERSION = b"baker-tenth-fill-spares-v15"
 SHOW_ATTEMPT_DETAIL = False
 AUTH_COOKIE_NAME = "ltu_spare_auth"
 AUTH_SESSION_DAYS = 30

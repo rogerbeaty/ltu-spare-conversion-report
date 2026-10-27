@@ -592,25 +592,27 @@ def _build_baker_tenth_bonus_rows(
     ball3_same_bowler = ball3_bowler and (ball3_bowler.strip().lower() == ball2_bowler.strip().lower())
     effective_ball3_for_ball2 = ball3 if (ball3 == 10 or ball3_same_bowler) else None
 
-    # If ball1 is strike, score a second counted attempt from balls 2 and 3.
+    # After a strike, count Ball2 as another Baker frame only when it is a
+    # strike or Ball3 completes its spare. A missed Ball3 is an excluded fill.
     if first_is_strike and ball2_bowler:
         if ball2 == 10:
             second_points = 20
         elif effective_ball3_for_ball2 is not None and (ball2 + effective_ball3_for_ball2 == 10):
             second_points = 10 + ball2
         else:
-            second_points = ball2 + (effective_ball3_for_ball2 or 0)
-        rows.append(
-            {
-                "game_id": game_id,
-                "event": event,
-                "game_date": game_date,
-                "game_type": game_type,
-                "frame": 10,
-                "athlete": ball2_bowler,
-                "points": int(second_points),
-            }
-        )
+            second_points = None
+        if second_points is not None:
+            rows.append(
+                {
+                    "game_id": game_id,
+                    "event": event,
+                    "game_date": game_date,
+                    "game_type": game_type,
+                    "frame": 10,
+                    "athlete": ball2_bowler,
+                    "points": int(second_points),
+                }
+            )
 
     # Third-ball strike counts as an additional attempt in:
     # - strike, strike, strike
