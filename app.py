@@ -161,6 +161,8 @@ def _read_auth_token() -> str | None:
         token = st.context.cookies.get(AUTH_COOKIE_NAME)
     except Exception:
         token = None
+    if not token:
+        token = cookie_manager.get(AUTH_COOKIE_NAME)
     return str(token) if token else None
 
 
@@ -447,15 +449,19 @@ st.markdown(
     div[data-testid="stDownloadButton"] button p {
       font-size: 0;
     }
-    [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"],
+    span[data-baseweb="tag"] {
       background-color: #1f5a94 !important;
       color: #ffffff !important;
     }
-    [data-testid="stMultiSelect"] [data-baseweb="tag"]:hover {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"]:hover,
+    span[data-baseweb="tag"]:hover {
       background-color: #174573 !important;
     }
     [data-testid="stMultiSelect"] [data-baseweb="tag"] span,
-    [data-testid="stMultiSelect"] [data-baseweb="tag"] svg {
+    [data-testid="stMultiSelect"] [data-baseweb="tag"] svg,
+    span[data-baseweb="tag"] span,
+    span[data-baseweb="tag"] svg {
       color: #ffffff !important;
       fill: #ffffff !important;
     }
