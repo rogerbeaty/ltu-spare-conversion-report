@@ -451,17 +451,15 @@ st.markdown(
     <style>
     .block-container,
     [data-testid="stMainBlockContainer"] {
-      width: 100%;
-      max-width: 98vw;
+      max-width: 75vw;
       margin-left: auto;
       margin-right: auto;
       padding-top: 2rem !important;
-      padding-left: 0.75rem !important;
-      padding-right: 0.75rem !important;
     }
     @media (max-width: 768px) {
       .block-container,
       [data-testid="stMainBlockContainer"] {
+        width: 100%;
         max-width: 100vw;
         padding-top: 1rem !important;
         padding-left: 0.35rem !important;
