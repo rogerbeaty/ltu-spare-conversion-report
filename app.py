@@ -451,10 +451,22 @@ st.markdown(
     <style>
     .block-container,
     [data-testid="stMainBlockContainer"] {
-      max-width: 75vw;
+      width: 100%;
+      max-width: 98vw;
       margin-left: auto;
       margin-right: auto;
       padding-top: 2rem !important;
+      padding-left: 0.75rem !important;
+      padding-right: 0.75rem !important;
+    }
+    @media (max-width: 768px) {
+      .block-container,
+      [data-testid="stMainBlockContainer"] {
+        max-width: 100vw;
+        padding-top: 1rem !important;
+        padding-left: 0.35rem !important;
+        padding-right: 0.35rem !important;
+      }
     }
     [data-testid="stElementContainer"]:has(
       iframe[title="extra_streamlit_components.CookieManager.cookie_manager"]
@@ -1760,6 +1772,7 @@ if records is not None:
             width="stretch",
             height=40 + (35 * len(summary_preview)),
             hide_index=True,
+            column_order=list(summary_grid.data.columns),
             column_config=summary_column_config,
             key="overall_summary_table",
             row_height=35,
