@@ -147,6 +147,43 @@ class TeamGameRow(Base):
     score: Mapped[int] = mapped_column(Integer)
 
 
+class AthleteAggregateRow(Base):
+    __tablename__ = "app_athlete_aggregates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    event_date: Mapped[str] = mapped_column(String(80), default="")
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    single_made: Mapped[int] = mapped_column(Integer, default=0)
+    single_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    multi_made: Mapped[int] = mapped_column(Integer, default=0)
+    multi_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    strikes: Mapped[int] = mapped_column(Integer, default=0)
+    strike_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    baker_points: Mapped[int] = mapped_column(Integer, default=0)
+    baker_frames: Mapped[int] = mapped_column(Integer, default=0)
+    team_score_total: Mapped[int] = mapped_column(Integer, default=0)
+    team_games: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PinLeaveAggregateRow(Base):
+    __tablename__ = "app_pin_leave_aggregates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("app_processed_uploads.id", ondelete="CASCADE"), index=True
+    )
+    event: Mapped[str] = mapped_column(String(255), index=True)
+    athlete: Mapped[str] = mapped_column(String(160), index=True)
+    pin_leave: Mapped[str] = mapped_column(String(80), default="")
+    is_single: Mapped[bool] = mapped_column(Boolean)
+    made: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
 @dataclass(frozen=True)
 class AppUser:
     id: int
@@ -201,6 +238,8 @@ class AppDatabase:
             "app_frame_attempts": "app_frame_attempts_id_seq",
             "app_baker_frames": "app_baker_frames_id_seq",
             "app_team_games": "app_team_games_id_seq",
+            "app_athlete_aggregates": "app_athlete_aggregates_id_seq",
+            "app_pin_leave_aggregates": "app_pin_leave_aggregates_id_seq",
         }
         with self.engine.begin() as connection:
             for table_name, sequence_name in sequence_tables.items():
@@ -509,7 +548,14 @@ class AppDatabase:
         require_admin(actor)
         with Session(self.engine) as session:
             count = int(session.scalar(select(func.count()).select_from(UploadRow)) or 0)
-            for model in (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow):
+            for model in (
+                SpareOpportunityRow,
+                FrameAttemptRow,
+                BakerFrameRow,
+                TeamGameRow,
+                AthleteAggregateRow,
+                PinLeaveAggregateRow,
+            ):
                 session.execute(delete(model))
             session.execute(delete(ProcessedUploadRow))
             session.execute(delete(UploadRow))
@@ -523,7 +569,14 @@ class AppDatabase:
         )
         if dataset_id is None:
             return
-        for model in (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow):
+        for model in (
+            SpareOpportunityRow,
+            FrameAttemptRow,
+            BakerFrameRow,
+            TeamGameRow,
+            AthleteAggregateRow,
+            PinLeaveAggregateRow,
+        ):
             session.execute(delete(model).where(model.dataset_id == dataset_id))
         session.execute(delete(ProcessedUploadRow).where(ProcessedUploadRow.id == dataset_id))
 
