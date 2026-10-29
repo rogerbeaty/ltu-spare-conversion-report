@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from io import BytesIO
+import inspect
 import os
 from pathlib import Path
 import re
@@ -155,21 +156,30 @@ def _cached_upload_revision(_database: AppDatabase, database_url: str) -> str:
     return _database.upload_revision()
 
 
-@st.cache_resource(show_spinner=False, max_entries=6)
+def _load_processed_datasets_compat(database, stored_names, **options):
+    """Pass only options supported by the deployed dataset module version."""
+    supported_options = inspect.signature(load_processed_datasets).parameters
+    compatible_options = {
+        name: value for name, value in options.items() if name in supported_options
+    }
+    return load_processed_datasets(database, stored_names, **compatible_options)
+
+
+@st.cache_data(show_spinner=False, max_entries=6)
 def _cached_processed_datasets(
     _database: AppDatabase,
     processed_revision: str,
     stored_names: tuple[str, ...],
 ):
     """Reuse the lightweight screen rows while uploads are unchanged."""
-    return load_processed_datasets(
+    return _load_processed_datasets_compat(
         _database,
         list(stored_names),
         include_raw=False,
     )
 
 
-@st.cache_resource(show_spinner=False, max_entries=6)
+@st.cache_data(show_spinner=False, max_entries=6)
 def _cached_raw_datasets(
     _database: AppDatabase,
     processed_revision: str,
@@ -178,7 +188,7 @@ def _cached_raw_datasets(
     athletes: tuple[str, ...] = (),
 ):
     """Load raw rows only for drill-downs and exports, then reuse them."""
-    return load_processed_datasets(
+    return _load_processed_datasets_compat(
         _database,
         list(stored_names),
         include_raw=True,
