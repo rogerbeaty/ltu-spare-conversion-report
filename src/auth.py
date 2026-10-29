@@ -314,17 +314,19 @@ class AppDatabase:
         if not token or len(token) < 32:
             return None
         with Session(self.engine) as session:
-            auth_session = session.scalar(
-                select(AuthSessionRow).where(AuthSessionRow.token_hash == session_token_hash(token))
-            )
-            if auth_session is None:
+            result = session.execute(
+                select(AuthSessionRow, UserRow)
+                .join(UserRow, UserRow.id == AuthSessionRow.user_id)
+                .where(AuthSessionRow.token_hash == session_token_hash(token))
+            ).one_or_none()
+            if result is None:
                 return None
+            auth_session, user = result
             if as_utc(auth_session.expires_at) <= utc_now():
                 session.delete(auth_session)
                 session.commit()
                 return None
-            user = session.get(UserRow, auth_session.user_id)
-            if user is None or not user.active:
+            if not user.active:
                 session.delete(auth_session)
                 session.commit()
                 return None

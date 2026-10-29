@@ -188,6 +188,43 @@ def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
     ) == [{"athlete": "Matt", "made": 1, "attempts": 1}]
     assert processed_upload_metadata(database)[first.stored_name] == (MEN, VARSITY)
 
+    display = load_processed_datasets(
+        database,
+        [first.stored_name],
+        include_raw=False,
+    )
+    assert display.records.empty
+    assert display.frame_attempts.empty
+    assert display.baker_frames.empty
+    assert display.summary_rows["athlete"].tolist() == ["Matt"]
+    assert display.leave_rows["athlete"].tolist() == ["Matt"]
+
+    raw = load_processed_datasets(
+        database,
+        [first.stored_name],
+        include_aggregates=False,
+    )
+    assert raw.records["athlete"].tolist() == ["Matt"]
+    assert raw.summary_rows.empty
+    assert raw.leave_rows.empty
+
+    filtered_raw = load_processed_datasets(
+        database,
+        [first.stored_name],
+        include_aggregates=False,
+        events=("Event 1",),
+        athletes=("Matt",),
+    )
+    assert filtered_raw.records["athlete"].tolist() == ["Matt"]
+    excluded_raw = load_processed_datasets(
+        database,
+        [first.stored_name],
+        include_aggregates=False,
+        events=("Event 1",),
+        athletes=("Other",),
+    )
+    assert excluded_raw.records.empty
+
     replacement_csv = tmp_path / "replacement.csv"
     _write_team_csv(replacement_csv, "Matthew", "Event 1")
     replacement = database.save_uploads(

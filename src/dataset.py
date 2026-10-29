@@ -45,6 +45,7 @@ class CombinedDataset:
 RAW_MODELS = (SpareOpportunityRow, FrameAttemptRow, BakerFrameRow, TeamGameRow)
 AGGREGATE_MODELS = (AthleteAggregateRow, PinLeaveAggregateRow)
 PROCESSED_MODELS = RAW_MODELS + AGGREGATE_MODELS
+DISPLAY_MODELS = (TeamGameRow,) + AGGREGATE_MODELS
 FRAME_COLUMNS = {
     SpareOpportunityRow: [
         "game_id", "event", "game_date", "frame", "athlete", "pin_leave",
@@ -179,11 +180,24 @@ def processed_upload_metadata(database: AppDatabase) -> dict[str, tuple[str, str
     return {stored_name: (team, squad) for stored_name, team, squad in rows}
 
 
-def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> CombinedDataset:
+def load_processed_datasets(
+    database: AppDatabase,
+    stored_names: list[str],
+    *,
+    include_raw: bool = True,
+    include_aggregates: bool = True,
+    events: tuple[str, ...] = (),
+    athletes: tuple[str, ...] = (),
+) -> CombinedDataset:
+    """Load display aggregates, optionally including raw rows used by details/exports."""
     if not stored_names:
         return CombinedDataset(*(pd.DataFrame() for _ in range(6)), source_files=[])
 
     frame_rows: dict[type, list[dict[str, Any]]] = {model: [] for model in PROCESSED_MODELS}
+    if include_raw:
+        models = RAW_MODELS + (AGGREGATE_MODELS if include_aggregates else ())
+    else:
+        models = DISPLAY_MODELS
     source_files: list[str] = []
     with Session(database.engine) as session:
         datasets = session.execute(
@@ -204,12 +218,13 @@ def load_processed_datasets(database: AppDatabase, stored_names: list[str]) -> C
             )
 
         dataset_ids = list(dataset_details)
-        for model in PROCESSED_MODELS:
-            rows = session.scalars(
-                select(model)
-                .where(model.dataset_id.in_(dataset_ids))
-                .order_by(model.dataset_id, model.id)
-            )
+        for model in models:
+            query = select(model).where(model.dataset_id.in_(dataset_ids))
+            if events:
+                query = query.where(model.event.in_(events))
+            if athletes:
+                query = query.where(model.athlete.in_(athletes))
+            rows = session.scalars(query.order_by(model.dataset_id, model.id))
             for row in rows:
                 stored_name, source_key, team_group, squad_group = dataset_details[row.dataset_id]
                 item = {column: getattr(row, column) for column in FRAME_COLUMNS[model]}

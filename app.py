@@ -83,6 +83,8 @@ def _clear_report_state() -> None:
 def _reset_after_upload_change() -> None:
     _clear_report_state()
     _cached_processed_datasets.clear()
+    _cached_raw_datasets.clear()
+    _cached_upload_revision.clear()
     st.session_state["last_uploader_hash"] = None
     st.session_state["synced_upload_revision"] = None
     st.session_state["processed_dataset_revision"] = None
@@ -147,14 +149,43 @@ def _get_database(url: str, schema_version: str) -> AppDatabase:
     return database
 
 
+@st.cache_data(show_spinner=False, ttl=3)
+def _cached_upload_revision(_database: AppDatabase, database_url: str) -> str:
+    """Avoid a cloud database round trip for every rapid filter rerun."""
+    return _database.upload_revision()
+
+
 @st.cache_resource(show_spinner=False, max_entries=6)
 def _cached_processed_datasets(
     _database: AppDatabase,
     processed_revision: str,
     stored_names: tuple[str, ...],
 ):
-    """Reuse processed rows while the uploaded-file revision is unchanged."""
-    return load_processed_datasets(_database, list(stored_names))
+    """Reuse the lightweight screen rows while uploads are unchanged."""
+    return load_processed_datasets(
+        _database,
+        list(stored_names),
+        include_raw=False,
+    )
+
+
+@st.cache_resource(show_spinner=False, max_entries=6)
+def _cached_raw_datasets(
+    _database: AppDatabase,
+    processed_revision: str,
+    stored_names: tuple[str, ...],
+    events: tuple[str, ...] = (),
+    athletes: tuple[str, ...] = (),
+):
+    """Load raw rows only for drill-downs and exports, then reuse them."""
+    return load_processed_datasets(
+        _database,
+        list(stored_names),
+        include_raw=True,
+        include_aggregates=False,
+        events=events,
+        athletes=athletes,
+    )
 
 
 def _bootstrap_database(database: AppDatabase) -> bool:
@@ -515,12 +546,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 try:
-    database = _get_database(_database_url(), DATASET_SCHEMA_VERSION.decode("ascii"))
+    database_url = _database_url()
+    database = _get_database(database_url, DATASET_SCHEMA_VERSION.decode("ascii"))
 except RuntimeError as exc:
     st.title("LTU Spare Conversion Report")
     st.error(str(exc))
     st.stop()
-if not _bootstrap_database(database):
+database_ready = st.session_state.get("database_ready_url") == database_url
+if not database_ready and not _bootstrap_database(database):
     st.title("LTU Spare Conversion Report")
     st.error("Authentication is not configured. Add the database and initial administrator settings.")
     st.code(
@@ -530,6 +563,7 @@ if not _bootstrap_database(database):
         language="toml",
     )
     st.stop()
+st.session_state["database_ready_url"] = database_url
 
 current_user = _render_login(database)
 _render_required_password_change(database, current_user)
@@ -552,12 +586,13 @@ if selected_page == "Admin":
     _render_admin_screen(database, current_user)
     st.stop()
 
-upload_revision = database.upload_revision()
+upload_revision = _cached_upload_revision(database, database_url)
 parser_version = DATASET_SCHEMA_VERSION.decode("ascii")
 processed_dataset_revision = f"{parser_version}:{upload_revision}"
 if st.session_state.get("processed_dataset_revision") != processed_dataset_revision:
     ensure_processed_datasets(database, parser_version)
     _cached_processed_datasets.clear()
+    _cached_raw_datasets.clear()
     st.session_state["processed_dataset_revision"] = processed_dataset_revision
 if (
     st.session_state.get("synced_upload_revision") != upload_revision
@@ -618,8 +653,9 @@ if current_user.is_admin:
         uploader_hash = batch_hash.hexdigest()
         if st.session_state.get("last_uploader_hash") != uploader_hash:
             stored_uploads = database.save_uploads(current_user, upload_entries)
+            _cached_upload_revision.clear()
             ensure_processed_datasets(database, parser_version)
-            upload_revision = database.upload_revision()
+            upload_revision = _cached_upload_revision(database, database_url)
             st.session_state["processed_dataset_revision"] = (
                 f"{parser_version}:{upload_revision}"
             )
@@ -742,9 +778,9 @@ if selected_paths:
             "athletes_found": len(athlete_values),
             "files_loaded": len(combined.source_files),
         }
-        st.session_state["records"] = combined.records.copy()
-        st.session_state["frame_attempts"] = combined.frame_attempts.copy()
-        st.session_state["baker_frames"] = combined.baker_frames.copy()
+        st.session_state["records"] = None
+        st.session_state["frame_attempts"] = None
+        st.session_state["baker_frames"] = None
         st.session_state["team_games"] = combined.team_games.copy()
         st.session_state["summary_rows"] = combined.summary_rows.copy()
         st.session_state["leave_rows"] = combined.leave_rows.copy()
@@ -1457,13 +1493,45 @@ def _render_team_baker_detail(detail: pd.DataFrame) -> None:
         )
 
 
+def _filter_events(frame: pd.DataFrame | None, events: tuple[str, ...]) -> pd.DataFrame:
+    if frame is None or frame.empty or not events:
+        return pd.DataFrame() if frame is None else frame
+    return frame[frame["event"].isin(events)].copy()
+
+
+def _load_raw_report_frames(
+    database: AppDatabase,
+    processed_revision: str,
+    source_files: tuple[str, ...],
+    events: tuple[str, ...] = (),
+    athletes: tuple[str, ...] = (),
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    dataset = _cached_raw_datasets(
+        database,
+        processed_revision,
+        source_files,
+        events,
+        athletes,
+    )
+    return (
+        dataset.records,
+        dataset.frame_attempts,
+        dataset.baker_frames,
+        dataset.team_games,
+    )
+
+
 def _build_all_event_pdf_zip(
+    database: AppDatabase,
+    processed_revision: str,
+    source_files: tuple[str, ...],
     team: str,
-    records: pd.DataFrame,
-    frame_attempts: pd.DataFrame | None,
-    baker_frames: pd.DataFrame | None,
-    team_games: pd.DataFrame | None,
 ) -> bytes:
+    records, frame_attempts, baker_frames, team_games = _load_raw_report_frames(
+        database,
+        processed_revision,
+        source_files,
+    )
     return build_athlete_pdf_reports_zip(
         team,
         records,
@@ -1474,14 +1542,18 @@ def _build_all_event_pdf_zip(
 
 
 def _build_event_pdf_zip(
+    database: AppDatabase,
+    processed_revision: str,
+    source_files: tuple[str, ...],
     team: str,
     event: str,
-    source_files: tuple[str, ...],
-    records: pd.DataFrame,
-    frame_attempts: pd.DataFrame | None,
-    baker_frames: pd.DataFrame | None,
-    team_games: pd.DataFrame | None,
 ) -> bytes:
+    records, frame_attempts, baker_frames, team_games = _load_raw_report_frames(
+        database,
+        processed_revision,
+        source_files,
+        (event,),
+    )
     pdf_style_version = "event-filename-v3"
     del pdf_style_version
     frame_details: dict[str, pd.DataFrame] = {}
@@ -1515,16 +1587,22 @@ def _build_event_pdf_zip(
 
 
 def _build_individual_pdf(
+    database: AppDatabase,
+    processed_revision: str,
+    source_files: tuple[str, ...],
     team: str,
     event: str,
     athlete: str,
-    source_files: tuple[str, ...],
-    records: pd.DataFrame,
-    frame_attempts: pd.DataFrame | None,
-    baker_frames: pd.DataFrame | None,
-    team_games: pd.DataFrame | None,
 ) -> bytes:
     report_event = None if event == "All Events" else event
+    events = (report_event,) if report_event else ()
+    records, frame_attempts, baker_frames, team_games = _load_raw_report_frames(
+        database,
+        processed_revision,
+        source_files,
+        events,
+        (athlete,),
+    )
     frame_detail = None
     if report_event:
         frame_detail = _build_combined_ball_by_ball_detail_uncached(
@@ -1560,17 +1638,14 @@ def _build_individual_pdf(
     )
 
 
-records = st.session_state.get("records")
-if records is not None:
+summary_rows = st.session_state.get("summary_rows")
+if summary_rows is not None:
     statistics_header_slot = st.empty()
     selected_single_thresholds = single_pin_thresholds(
         st.session_state.get("team_scope", team_scope)
     )
 
-    frame_attempts = st.session_state.get("frame_attempts")
-    baker_frames = st.session_state.get("baker_frames")
     team_games = st.session_state.get("team_games")
-    summary_rows = st.session_state.get("summary_rows")
     leave_rows = st.session_state.get("leave_rows")
     if summary_rows is not None and not summary_rows.empty:
         event_table = summary_rows[["event", "event_date"]].dropna(subset=["event"]).copy()
@@ -1630,54 +1705,27 @@ if records is not None:
     single_event_selected = len(selected_events) == 1
     selected_event = selected_events[0] if single_event_selected else "All Events"
 
-    records_event = records.copy()
-    frame_attempts_event = frame_attempts.copy() if frame_attempts is not None else None
-    baker_frames_event = baker_frames.copy() if baker_frames is not None else None
-    team_games_event = team_games.copy() if team_games is not None else None
-    summary_rows_event = summary_rows.copy() if summary_rows is not None else None
-    leave_rows_event = leave_rows.copy() if leave_rows is not None else None
-    if not all_events_selected:
-        records_event = records_event[records_event["event"].isin(selected_events)].copy()
-        if frame_attempts_event is not None:
-            frame_attempts_event = frame_attempts_event[
-                frame_attempts_event["event"].isin(selected_events)
-            ].copy()
-        if baker_frames_event is not None:
-            baker_frames_event = baker_frames_event[
-                baker_frames_event["event"].isin(selected_events)
-            ].copy()
-        if team_games_event is not None:
-            team_games_event = team_games_event[
-                team_games_event["event"].isin(selected_events)
-            ].copy()
-        if summary_rows_event is not None:
-            summary_rows_event = summary_rows_event[
-                summary_rows_event["event"].isin(selected_events)
-            ].copy()
-        if leave_rows_event is not None:
-            leave_rows_event = leave_rows_event[
-                leave_rows_event["event"].isin(selected_events)
-            ].copy()
+    selected_event_tuple = tuple(selected_events)
+    team_games_event = _filter_events(team_games, selected_event_tuple)
+    summary_rows_event = _filter_events(summary_rows, selected_event_tuple)
+    leave_rows_event = _filter_events(leave_rows, selected_event_tuple)
 
     report_source_files = tuple(st.session_state.get("source_files", []))
     if all_events_selected:
         pdf_zip_data = lambda: _build_all_event_pdf_zip(
+            database,
+            processed_dataset_revision,
+            report_source_files,
             team_scope,
-            records_event,
-            frame_attempts_event,
-            baker_frames_event,
-            team_games_event,
         )
         download_help = "Download athlete PDF reports for all events"
     elif single_event_selected:
         pdf_zip_data = lambda: _build_event_pdf_zip(
+            database,
+            processed_dataset_revision,
+            report_source_files,
             team_scope,
             selected_event,
-            report_source_files,
-            records_event,
-            frame_attempts_event,
-            baker_frames_event,
-            team_games_event,
         )
         download_help = f"Download athlete PDF reports for {selected_event}"
     else:
@@ -1706,14 +1754,12 @@ if records is not None:
             individual_pdf_data = None
             if athlete_filter is not None and (all_events_selected or single_event_selected):
                 individual_pdf_data = lambda: _build_individual_pdf(
+                    database,
+                    processed_dataset_revision,
+                    report_source_files,
                     team_scope,
                     selected_event,
                     athlete_filter,
-                    report_source_files,
-                    records_event,
-                    frame_attempts_event,
-                    baker_frames_event,
-                    team_games_event,
                 )
             individual_col, excel_col, bulk_col = st.columns(3)
             with individual_col:
@@ -1776,12 +1822,19 @@ if records is not None:
             row_height=35,
         )
 
-    if not records_event.empty:
+    if not summary_rows_event.empty:
         single_event_mode = single_event_selected
         single_attempt_detail = pd.DataFrame()
         multi_attempt_detail = pd.DataFrame()
         strike_attempt_detail = pd.DataFrame()
         if athlete_filter is not None and SHOW_ATTEMPT_DETAIL:
+            records_event, frame_attempts_event, _, _ = _load_raw_report_frames(
+                database,
+                processed_dataset_revision,
+                report_source_files,
+                selected_event_tuple,
+                (athlete_filter,),
+            )
             strike_attempt_detail = _build_strike_attempt_detail(frame_attempts_event, athlete_filter)
             all_frame_detail = _build_combined_ball_by_ball_detail(
                 st.session_state.get("source_files", []),
@@ -1996,6 +2049,13 @@ if records is not None:
 
         if single_event_selected and athlete_filter is not None:
             st.markdown("**Ball-by-Ball Detail**")
+            records_event, frame_attempts_event, _, _ = _load_raw_report_frames(
+                database,
+                processed_dataset_revision,
+                report_source_files,
+                (selected_event,),
+                (athlete_filter,),
+            )
             ball_detail = _build_combined_ball_by_ball_detail(
                 st.session_state.get("source_files", []),
                 st.session_state.get("team_scope", ALL_TEAMS),
