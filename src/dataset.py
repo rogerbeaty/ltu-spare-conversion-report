@@ -84,12 +84,14 @@ def classify_team_from_filename(filename: str) -> str:
     return UNCLASSIFIED
 
 
-def classify_squad(team_names: list[str]) -> str:
-    return JV if any("jv" in team_name.casefold() for team_name in team_names) else VARSITY
+def classify_squad(team_names: list[str], filename: str = "") -> str:
+    original_name = filename.partition("__")[2] or filename
+    markers = [*team_names, original_name]
+    return JV if any("jv" in marker.casefold() for marker in markers) else VARSITY
 
 
 def classify_squad_from_upload(path: Path) -> str:
-    return classify_squad(extract_team_names(path.read_bytes()))
+    return classify_squad(extract_team_names(path.read_bytes()), path.name)
 
 
 def ensure_processed_datasets(database: AppDatabase, parser_version: str) -> int:
@@ -114,7 +116,7 @@ def ensure_processed_datasets(database: AppDatabase, parser_version: str) -> int
     for upload in uploads:
         parsed = parse_bowlsheet_csv(upload.content)
         team = classify_team_from_filename(upload.stored_name)
-        squad = classify_squad(extract_team_names(upload.content))
+        squad = classify_squad(extract_team_names(upload.content), upload.stored_name)
         with Session(database.engine) as session:
             existing = session.scalar(
                 select(ProcessedUploadRow).where(ProcessedUploadRow.upload_id == upload.id)
@@ -378,7 +380,7 @@ def combine_saved_datasets(paths: list[Path], team_scope: str) -> CombinedDatase
 
         csv_bytes = path.read_bytes()
         parsed = parse_bowlsheet_csv(csv_bytes)
-        squad = classify_squad(extract_team_names(csv_bytes))
+        squad = classify_squad(extract_team_names(csv_bytes), path.name)
         source_key = path.name.partition("__")[0][:12]
         source_files.append(path.name)
 

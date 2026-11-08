@@ -129,6 +129,13 @@ def test_classify_squad_uses_jv_marker_in_team_name() -> None:
     assert classify_squad([]) == VARSITY
 
 
+def test_classify_squad_uses_original_filename() -> None:
+    assert classify_squad(["2026 WHAC 2"], "LTU-Women-JV-WHAC-2.csv") == JV
+    assert classify_squad(["2026 WHAC 2"], "LTU-Women-Varsity-WHAC-2.csv") == VARSITY
+    assert classify_squad([], "hash__LTU-Women-jv-WHAC-2.csv") == JV
+    assert classify_squad(["Women's JV"], "Varsity.csv") == JV
+
+
 def test_classify_squad_from_frame_column_team_name(tmp_path: Path) -> None:
     upload = tmp_path / "hash__export.csv"
     pd.DataFrame(
@@ -153,6 +160,39 @@ def test_combine_saved_datasets_and_make_game_ids_unique(tmp_path: Path) -> None
     men_only = combine_saved_datasets([men, women], MEN)
     assert set(men_only.records["athlete"]) == {"Alex"}
     assert set(men_only.records["team_group"]) == {MEN}
+
+
+def test_filename_classification_refreshes_existing_upload(tmp_path: Path) -> None:
+    from sqlalchemy import update
+    from sqlalchemy.orm import Session
+    from src.auth import ProcessedUploadRow
+
+    database = AppDatabase(f"sqlite:///{tmp_path / 'classification.db'}")
+    database.initialize()
+    admin = database.create_user(
+        None, "Admin", "admin@example.test", ADMIN,
+        password="AdminPassword1!", must_change_password=False,
+    )
+    csv_path = tmp_path / "event.csv"
+    _write_team_csv(csv_path, "Alex", "2026 WHAC 2")
+    uploads = database.save_uploads(admin, [
+        ("LTU-Women-JV-WHAC-2.csv", csv_path.read_bytes()),
+        ("LTU-Women-Varsity-WHAC-2.csv", csv_path.read_bytes()),
+    ])
+    assert ensure_processed_datasets(database, "old-version") == 2
+    with Session(database.engine) as session:
+        session.execute(update(ProcessedUploadRow).values(squad_group=VARSITY))
+        session.commit()
+
+    assert ensure_processed_datasets(database, "filename-jv-v17") == 2
+    assert ensure_processed_datasets(database, "filename-jv-v17") == 0
+    metadata = processed_upload_metadata(database)
+    assert metadata[uploads[0].stored_name] == (WOMEN, JV)
+    assert metadata[uploads[1].stored_name] == (WOMEN, VARSITY)
+    display = load_processed_datasets(
+        database, [upload.stored_name for upload in uploads], include_raw=False,
+    )
+    assert set(display.summary_rows["squad_group"]) == {JV, VARSITY}
 
 
 def test_processed_dataset_is_persisted_and_replaced(tmp_path: Path) -> None:
