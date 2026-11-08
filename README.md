@@ -123,7 +123,7 @@ Include `Men` or `Women` in every uploaded filename. The app classifies filename
 - `Men` combines every saved Men's file.
 - `Women` combines every saved Women's file.
 
-The Team filter uses BowlSheet Team Name. Any Team Name containing `JV` (case-insensitive) is JV; every other Team Name is Varsity.
+The Team filter checks both the uploaded filename and BowlSheet Team Name. If either contains `JV` (case-insensitive), the file is JV; otherwise it is Varsity. A JV filename is checked again when selecting report files, so older saved classification metadata cannot include a JV file in a Varsity report. Team assignment belongs to the uploaded file, not a permanent athlete roster.
 
 Each CSV's `Event` value is treated as the tournament name. Leave the Event filter empty for all events, select one event for event-specific statistics and downloads, or select multiple events for a combined on-screen summary. Multi-event selections are for on-screen comparison and do not create exports.
 

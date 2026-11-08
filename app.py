@@ -57,7 +57,7 @@ from src.report import add_team_game_score_columns, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
-DATASET_SCHEMA_VERSION = b"filename-jv-classification-v17"
+DATASET_SCHEMA_VERSION = b"filename-jv-filter-guard-v18"
 SHOW_ATTEMPT_DETAIL = False
 AUTH_COOKIE_NAME = "ltu_spare_auth"
 AUTH_SESSION_DAYS = 30
@@ -700,7 +700,11 @@ if st.session_state.get("upload_metadata_revision") != processed_dataset_revisio
     st.session_state["upload_metadata_revision"] = processed_dataset_revision
 upload_metadata = st.session_state.get("upload_metadata", {})
 file_squads = {
-    path: upload_metadata.get(path.name, (classify_team_from_filename(path.name), VARSITY))[1]
+    # Check the filename at selection time too: persisted metadata can predate
+    # the filename rule, including during a running server's code reload.
+    path: JV
+    if "jv" in (path.name.partition("__")[2] or path.name).casefold()
+    else upload_metadata.get(path.name, (classify_team_from_filename(path.name), VARSITY))[1]
     for path in saved_files
 }
 team_paths = [
