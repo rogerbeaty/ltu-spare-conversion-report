@@ -4,6 +4,7 @@ from collections import Counter
 from html import escape
 
 import pandas as pd
+from src.pins import build_pin_diagram
 
 
 STATISTIC_CHIP_COLORS = {
@@ -114,6 +115,12 @@ def add_statistic_classification(
         statistics.append(_combine_labels(frame_labels))
 
     if excluded_fill_rows:
+        if "Pin Diagram" in out.columns:
+            for index in excluded_fill_rows:
+                out.at[index, "Pin Diagram"] = build_pin_diagram(
+                    out.at[index, "Ball3"], None,
+                    leave1=out.loc[index].get("__Ball3 Leave"),
+                )
         blank_columns = [column for column in ("Points", "Ball1", "Ball2") if column in out.columns]
         out[blank_columns] = out[blank_columns].astype(object)
         out.loc[excluded_fill_rows, blank_columns] = ""

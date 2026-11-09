@@ -53,6 +53,7 @@ from src.storage import (
     uploaded_csv_label,
 )
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
+from src.pins import build_pin_diagram, render_pin_diagram
 from src.report import add_team_game_score_columns, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
@@ -1021,12 +1022,13 @@ def _build_ball_by_ball_detail(
         "Ball1",
         "Ball2",
         "Ball3",
+        "Pin Diagram",
         "Game Type",
         "__Game Date",
         "__Game Order",
     ]
     if include_bowler_metadata:
-        base_cols += ["__Ball1 Bowler", "__Ball2 Bowler", "__Ball3 Bowler"]
+        base_cols += ["__Ball1 Bowler", "__Ball2 Bowler", "__Ball3 Bowler", "__Ball3 Leave"]
     prefix_cols = (["Event"] if include_event else []) + (["Athlete"] if include_athlete else [])
     cols = prefix_cols + base_cols
     if not csv_bytes:
@@ -1066,6 +1068,13 @@ def _build_ball_by_ball_detail(
                     "Ball1": row.get(f"Frame{frame}Ball1"),
                     "Ball2": row.get(f"Frame{frame}Ball2"),
                     "Ball3": row.get("Frame10Ball3") if frame == 10 else "",
+                    "Pin Diagram": build_pin_diagram(
+                        row.get(f"Frame{frame}Ball1"), row.get(f"Frame{frame}Ball2"),
+                        row.get("Frame10Ball3") if frame == 10 else None,
+                        row.get(f"Frame{frame}Ball1Pins"), row.get(f"Frame{frame}Ball2Pins"),
+                        row.get("Frame10Ball3Pins") if frame == 10 else None,
+                    ),
+                    "__Ball3 Leave": row.get("Frame10Ball3Pins") if frame == 10 else None,
                     "Game Type": game_type,
                     "__Game Date": game_date,
                     "__Game Order": int(game_id),
@@ -1106,6 +1115,9 @@ def _build_ball_by_ball_detail(
                     "Ball1": knocked[i],
                     "Ball2": knocked[i + 1],
                     "Ball3": "",
+                    "Pin Diagram": build_pin_diagram(
+                        knocked[i], knocked[i + 1], leave1=row.get(80 + i), leave2=row.get(81 + i),
+                    ),
                     "Game Type": game_type,
                     "__Game Date": game_date,
                     "__Game Order": int(game_id),
@@ -1133,6 +1145,11 @@ def _build_ball_by_ball_detail(
                     "Ball1": knocked[18],
                     "Ball2": knocked[19],
                     "Ball3": knocked[20],
+                    "Pin Diagram": build_pin_diagram(
+                        knocked[18], knocked[19], knocked[20],
+                        row.get(98), row.get(99), row.get(100),
+                    ),
+                    "__Ball3 Leave": row.get(100),
                     "Game Type": game_type,
                     "__Game Date": game_date,
                     "__Game Order": int(game_id),
@@ -1241,6 +1258,7 @@ def _build_combined_ball_by_ball_detail(
     team_vs_baker_view: bool = False,
     include_bowler_metadata: bool = False,
 ) -> pd.DataFrame:
+    """Cache event detail including compact pin diagrams (presentation v1)."""
     return _build_combined_ball_by_ball_detail_uncached(
         source_files,
         team_scope,
@@ -1354,6 +1372,10 @@ def _render_table_html(
         view["Statistic"] = view["Statistic"].apply(render_statistic_chips)
         html_columns.add("Statistic")
 
+    if "Pin Diagram" in view.columns:
+        view["Pin Diagram"] = view["Pin Diagram"].apply(render_pin_diagram)
+        html_columns.add("Pin Diagram")
+
     table_classes = "summary-table compact-table" if compact else "summary-table"
     if html_columns:
         for column in view.columns:
@@ -1383,6 +1405,7 @@ def _render_table_html(
 .summary-wrap.compact-table-wrap {{
   width: fit-content;
   max-width: 100%;
+  overflow-x: auto;
 }}
 .summary-table.compact-table {{
   width: auto;
@@ -1481,6 +1504,8 @@ def _build_summary_grid(
 
 
 def _render_team_baker_detail(detail: pd.DataFrame) -> None:
+    st.caption("Pins: green = Ball 1 down; yellow = Ball 2 down; red = still standing; "
+               "gray = not determined or no second ball. Left = leave after the first ball of that rack.")
     team_detail, baker_detail = split_team_baker_detail(detail)
     team_column, baker_column = st.columns(2)
     with team_column:

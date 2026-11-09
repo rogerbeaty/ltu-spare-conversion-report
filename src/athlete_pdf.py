@@ -16,6 +16,7 @@ from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, T
 
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.detail import abbreviate_statistic_label, split_team_baker_detail
+from src.pins import PIN_COLORS, PIN_POSITIONS, pin_racks
 
 
 NAVY = colors.HexColor("#17365D")
@@ -35,6 +36,27 @@ STATISTIC_CHIP_COLORS = {
     "split": (colors.HexColor("#FFF2CC"), TEXT),
     "fill": (colors.HexColor("#E7E6E6"), TEXT),
 }
+
+
+class PinDiagram(Flowable):
+    def __init__(self, value: object):
+        super().__init__()
+        self.racks = pin_racks(value)
+        self.width = 58
+        self.height = 55 * len(self.racks)
+
+    def draw(self) -> None:
+        for index, rack in enumerate(self.racks):
+            top = self.height - index * 55
+            self.canv.setFont("Helvetica", 5.5)
+            self.canv.setFillColor(TEXT)
+            if rack["label"]:
+                self.canv.drawCentredString(29, top - 6, rack["label"])
+            for pin, (x, y) in PIN_POSITIONS.items():
+                self.canv.setFillColor(colors.HexColor(PIN_COLORS[rack["colors"][str(pin)]]))
+                self.canv.circle(7 + x * 0.46, top - 9 - y * 0.46, 4, fill=1, stroke=0)
+            self.canv.setFillColor(TEXT)
+            self.canv.drawCentredString(29, top - 53, f"Left: {rack['left']}")
 
 
 class StatisticChips(Flowable):
@@ -225,6 +247,11 @@ def build_athlete_report_pdf(
             [
                 Spacer(1, 0.12 * inch),
                 Paragraph("Frame-by-Frame Detail", heading_style),
+                Paragraph(
+                    "Pins: green = first ball down; yellow = second ball down; red = still standing; "
+                    "gray = unknown or no second ball. Left = leave after first ball of that rack.",
+                    styles["Normal"],
+                ),
                 _frame_detail_pdf_table(frame_detail),
             ]
         )
@@ -354,11 +381,11 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
     team_frame, baker_frame = split_team_baker_detail(frame)
     columns = [
         column
-        for column in ["Frame", "Points", "Ball1", "Ball2", "Ball3", "Statistic"]
+        for column in ["Frame", "Points", "Ball1", "Ball2", "Ball3", "Pin Diagram", "Statistic"]
         if column in frame.columns
     ]
     data = [
-        ["Team", "", "", "", "", "", "", "Baker", "", "", "", "", ""],
+        ["Team"] + [""] * (len(columns) - 1) + [""] + ["Baker"] + [""] * (len(columns) - 1),
         columns + [""] + columns,
     ]
     max_rows = max(len(team_frame), len(baker_frame), 1)
@@ -369,7 +396,9 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
             + _frame_detail_values(baker_frame, index, columns)
         )
 
-    side_widths = [0.42 * inch, 0.46 * inch, 0.4 * inch, 0.4 * inch, 0.4 * inch, 1.48 * inch]
+    widths = {"Frame": 20, "Points": 23, "Ball1": 18, "Ball2": 18, "Ball3": 18,
+              "Pin Diagram": 70, "Statistic": 100}
+    side_widths = [widths[column] for column in columns]
     table = Table(
         data,
         colWidths=side_widths + [0.16 * inch] + side_widths,
@@ -377,20 +406,17 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
         hAlign="LEFT",
     )
     style = _base_table_style(font_size=6.3, header_row=1)
-    style.add("SPAN", (0, 0), (5, 0))
-    style.add("SPAN", (7, 0), (12, 0))
-    style.add("BACKGROUND", (0, 0), (5, 0), LIGHT_BLUE)
-    style.add("BACKGROUND", (7, 0), (12, 0), LIGHT_BLUE)
-    style.add("TEXTCOLOR", (0, 0), (5, 0), NAVY)
-    style.add("TEXTCOLOR", (7, 0), (12, 0), NAVY)
-    style.add("FONTNAME", (0, 0), (5, 0), "Helvetica-Bold")
-    style.add("FONTNAME", (7, 0), (12, 0), "Helvetica-Bold")
-    style.add("GRID", (6, 0), (6, -1), 0, colors.white)
-    style.add("BACKGROUND", (6, 0), (6, -1), colors.white)
-    style.add("ALIGN", (0, 2), (4, -1), "CENTER")
-    style.add("ALIGN", (7, 2), (11, -1), "CENTER")
-    style.add("ALIGN", (5, 2), (5, -1), "LEFT")
-    style.add("ALIGN", (12, 2), (12, -1), "LEFT")
+    size = len(columns)
+    for start in (0, size + 1):
+        end = start + size - 1
+        style.add("SPAN", (start, 0), (end, 0))
+        style.add("BACKGROUND", (start, 0), (end, 0), LIGHT_BLUE)
+        style.add("TEXTCOLOR", (start, 0), (end, 0), NAVY)
+        style.add("FONTNAME", (start, 0), (end, 0), "Helvetica-Bold")
+        style.add("ALIGN", (start, 2), (end, -1), "CENTER")
+        style.add("ALIGN", (end, 2), (end, -1), "LEFT")
+    style.add("GRID", (size, 0), (size, -1), 0, colors.white)
+    style.add("BACKGROUND", (size, 0), (size, -1), colors.white)
     table.setStyle(style)
     return table
 
@@ -402,6 +428,7 @@ def _frame_detail_values(frame: pd.DataFrame, index: int, columns: list[str]) ->
     return [
         StatisticChips(row[column])
         if column == "Statistic"
+        else PinDiagram(row[column]) if column == "Pin Diagram"
         else _display_detail_value(row[column])
         for column in columns
     ]
