@@ -21,6 +21,10 @@ EVENT_NAME_ALIASES = {
     "whac 1 jax 60": "2026 WHAC 1",
     "2026 whac1": "2026 WHAC 1",
     "2026 whac 1": "2026 WHAC 1",
+    "whac 2": "2026 WHAC 2",
+    "whac 2 2026/27": "2026 WHAC 2",
+    "2026 whac2": "2026 WHAC 2",
+    "2026 whac 2": "2026 WHAC 2",
     "2026 detroit mcc": "2026 Detroit MCC",
     "2026 midwest collegiate championship": "2026 Detroit MCC",
 }

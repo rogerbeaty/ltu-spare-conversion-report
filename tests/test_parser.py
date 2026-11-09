@@ -17,10 +17,35 @@ from src.parser import (
 def test_canonical_event_and_athlete_names() -> None:
     assert canonicalize_event_name("WHAC 1 JAX 60") == "2026 WHAC 1"
     assert canonicalize_event_name("WHAC 1") == "2026 WHAC 1"
+    assert canonicalize_event_name("WHAC 2 2026/27") == "2026 WHAC 2"
+    assert canonicalize_event_name(" whac 2 2026/27 ") == "2026 WHAC 2"
+    assert canonicalize_event_name("WHAC 2") == "2026 WHAC 2"
+    assert canonicalize_event_name("2026 WHAC2") == "2026 WHAC 2"
+    assert canonicalize_event_name("2026 WHAC 2") == "2026 WHAC 2"
+    assert canonicalize_event_name("2025 WHAC 2") == "2025 WHAC 2"
     assert canonicalize_event_name("2026 Midwest Collegiate Championship") == "2026 Detroit MCC"
     assert canonicalize_athlete_name("Matt Schepis") == "Matthew Schepis"
     assert canonicalize_athlete_name("Serena Miller") == "Serina Miller"
     assert canonicalize_athlete_name("William Cunningham") == "William Cunningham III"
+
+
+def test_whac2_event_alias_applies_to_all_record_types() -> None:
+    rows = [
+        {
+            "Event": "WHAC 2 2026/27",
+            "GameType": game_type,
+            "Frame1Ball1Bowler": "Alex",
+            "Frame1Ball1": 9,
+            "Frame1Ball2": 1,
+            "Frame1Ball1Pins": "10",
+            "Frame10Score": 180,
+        }
+        for game_type in ("Team", "Baker")
+    ]
+    result = parse_bowlsheet_csv(pd.DataFrame(rows).to_csv(index=False).encode())
+    for frame in (result.records, result.frame_attempts, result.baker_frames, result.team_games):
+        assert not frame.empty
+        assert set(frame["event"]) == {"2026 WHAC 2"}
 
 
 def test_parse_format_a_counts_and_split_rules() -> None:

@@ -57,7 +57,7 @@ from src.report import add_team_game_score_columns, build_summary_workbook
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
-DATASET_SCHEMA_VERSION = b"filename-jv-filter-guard-v18"
+DATASET_SCHEMA_VERSION = b"whac2-event-normalization-v19"
 SHOW_ATTEMPT_DETAIL = False
 AUTH_COOKIE_NAME = "ltu_spare_auth"
 AUTH_SESSION_DAYS = 30
