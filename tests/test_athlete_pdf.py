@@ -51,6 +51,20 @@ def test_athlete_pdf_is_valid_pdf() -> None:
     assert len(pdf) > 1_000
 
 
+def test_summary_headers_wrap_and_fit_portrait_page() -> None:
+    from reportlab.platypus import Paragraph
+    from src.athlete_pdf import _event_summary, _summary_pdf_table
+
+    records = pd.DataFrame([_record("Alex", is_single=True, made=True, leave="10")])
+    empty = pd.DataFrame()
+    summary = _event_summary(records, empty, empty, empty, include_total=False)
+    table = _summary_pdf_table(summary, (0.9, 0.8))
+    width, _ = table.wrap(549.6, 700)
+    assert width <= 549.6
+    assert isinstance(table._cellvalues[0][1][0], Paragraph)
+    assert "<br/>" in table._cellvalues[0][1][0].text
+
+
 def test_athlete_report_filename_changes_only_for_event_exports() -> None:
     assert athlete_report_filename("Alex") == "Alex - LTU Spare Report.pdf"
     assert athlete_report_filename("Alex", "2026 WHAC 1") == "Alex - 2026 WHAC 1.pdf"

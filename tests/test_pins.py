@@ -130,8 +130,9 @@ def test_pin_diagrams_fit_portrait_pdf_detail():
         "Statistic": "Strike / Multi Pin Missed",
     }])
     table = _frame_detail_pdf_table(detail)
-    width, height = table.wrap(561.6, 700)
-    assert width <= 561.6
+    width, height = table.wrap(549.6, 700)
+    assert width <= 549.6
+    assert table._colWidths[1] >= 27
     assert height < 700
     assert "Points" not in table._cellvalues[1]
     assert isinstance(table._cellvalues[2][4], (list, tuple))

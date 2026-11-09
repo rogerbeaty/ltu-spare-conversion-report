@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
-from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.detail import abbreviate_statistic_label, split_team_baker_detail
@@ -61,7 +61,7 @@ class PinDiagram(Flowable):
 
 class StatisticChips(Flowable):
     font_name = "Helvetica-Bold"
-    font_size = 6.3
+    font_size = 7.2
     horizontal_padding = 4
     vertical_padding = 2
     chip_gap = 3
@@ -229,6 +229,10 @@ def build_athlete_report_pdf(
         spaceBefore=4,
         spaceAfter=5,
     )
+    legend_style = ParagraphStyle(
+        "PinLegend", parent=styles["Normal"], fontSize=8, leading=11,
+        textColor=TEXT, spaceAfter=10,
+    )
 
     subtitle = f"LTU {escape(team)} Team"
     if event:
@@ -245,12 +249,14 @@ def build_athlete_report_pdf(
     if frame_detail is not None and not frame_detail.empty:
         story.extend(
             [
-                Spacer(1, 0.12 * inch),
+                PageBreak(),
+                Paragraph(escape(athlete), title_style),
+                Paragraph(subtitle, subtitle_style),
                 Paragraph("Frame-by-Frame Detail", heading_style),
                 Paragraph(
                     "Pins: green = first ball down; yellow = second ball down; red = still standing; "
                     "gray = unknown or no second ball. Text below the pins shows the leave after the first ball of that rack.",
-                    styles["Normal"],
+                    legend_style,
                 ),
                 _frame_detail_pdf_table(frame_detail),
             ]
@@ -277,17 +283,27 @@ def _summary_pdf_table(
     single_thresholds: tuple[float, float],
 ) -> Table:
     headers = list(summary.columns)
-    data = [headers]
+    header_style = ParagraphStyle(
+        "SummaryHeader", fontName="Helvetica-Bold", fontSize=7, leading=9,
+        textColor=colors.white, alignment=TA_CENTER,
+    )
+    event_style = ParagraphStyle("EventCell", fontName="Helvetica", fontSize=7, leading=9)
+    data = [[Paragraph(escape(header).replace(" ", "<br/>") if index else escape(header),
+                       header_style) for index, header in enumerate(headers)]]
     for _, row in summary.iterrows():
-        data.append([_format_value(header, row[header]) for header in headers])
+        values = [_format_value(header, row[header]) for header in headers]
+        values[0] = Paragraph(escape(values[0]), event_style)
+        data.append(values)
 
     table = Table(
         data,
-        colWidths=[1.35 * inch] + [0.46 * inch] * (len(headers) - 1),
+        colWidths=[1.35 * inch] + [0.48 * inch] * (len(headers) - 1),
         repeatRows=1,
         hAlign="LEFT",
     )
-    style = _base_table_style(font_size=6.4)
+    style = _base_table_style(font_size=7)
+    style.add("TOPPADDING", (0, 0), (-1, -1), 5)
+    style.add("BOTTOMPADDING", (0, 0), (-1, -1), 5)
     style.add("ALIGN", (1, 1), (-1, -1), "CENTER")
     style.add("ALIGN", (0, 1), (0, -1), "LEFT")
     for row_index, (_, row) in enumerate(summary.iterrows(), start=1):
@@ -396,8 +412,8 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
             + _frame_detail_values(baker_frame, index, columns)
         )
 
-    widths = {"Frame": 20, "Ball1": 18, "Ball2": 18, "Ball3": 18,
-              "Pin Diagram": 70, "Statistic": 100}
+    widths = {"Frame": 30, "Ball1": 27, "Ball2": 27, "Ball3": 27,
+              "Pin Diagram": 66, "Statistic": 92}
     side_widths = [widths[column] for column in columns]
     table = Table(
         data,
@@ -405,7 +421,9 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
         repeatRows=2,
         hAlign="LEFT",
     )
-    style = _base_table_style(font_size=6.3, header_row=1)
+    style = _base_table_style(font_size=7.5, header_row=1)
+    style.add("TOPPADDING", (0, 0), (-1, -1), 5)
+    style.add("BOTTOMPADDING", (0, 0), (-1, -1), 5)
     size = len(columns)
     for start in (0, size + 1):
         end = start + size - 1
