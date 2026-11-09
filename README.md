@@ -114,6 +114,8 @@ The database retains the raw upload and its processed rows. Raw files are synchr
 
 ## Athlete PDF reports
 
+The on-screen Overall Summary supports header sorting while keeping the Total row pinned at the bottom. The Name column remains pinned on the left during horizontal scrolling. Sorting happens in the browser and does not recalculate totals or alter export order.
+
 Event-specific ball-by-ball detail includes a compact pin diagram on screen and in the PDF. Green pins fell on the first delivery of a rack, yellow pins on the second, and red pins remain standing after the second. The text beneath each rack shows the leave after the first delivery (without a prefix), or `Strike` when all ten pins fell on that delivery. Gray means the pin identity is unavailable or no second delivery was taken on that rack. Rack resets in the tenth frame are displayed separately. Diagrams are informational and do not change scoring, attempt counts, or fill-ball exclusions.
 
 The download icon beside **Bowler Statistics** follows the Event filter. With **All Events** selected, it creates one ZIP containing a full report for every athlete on the selected team. With a specific event selected, it creates one ZIP containing an event-only PDF for every athlete who appears in that event. Each event PDF includes that athlete's event summary, single-pin and multi-pin combination statistics, and classified frame-by-frame detail with all three ball values. Statistic classifications use the same colored chips as the online event detail. No Google account or network connection is required.

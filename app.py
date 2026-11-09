@@ -12,6 +12,7 @@ import re
 import pandas as pd
 import extra_streamlit_components as stx
 import streamlit as st
+from st_aggrid import AgGrid
 
 from src.auth import (
     ADMIN,
@@ -55,6 +56,7 @@ from src.storage import (
 from src.thresholds import MULTI_PIN_THRESHOLDS, single_pin_thresholds
 from src.pins import build_pin_diagram, render_pin_diagram
 from src.report import add_team_game_score_columns, build_summary_workbook
+from src.summary_grid import build_summary_grid
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 LOCAL_DATABASE_PATH = Path(__file__).resolve().parent / "data" / "ltu_report.db"
@@ -1447,77 +1449,6 @@ def _render_table_html(
 """
 
 
-def _build_summary_grid(
-    df: pd.DataFrame,
-    single_thresholds: tuple[float, float],
-) -> tuple[pd.io.formats.style.Styler, dict[str, object]]:
-    view = df.rename(
-        columns={
-            "Single-Pin Made": "SP Made",
-            "Single-Pin Attempts": "SP Att",
-            "Single-Pin %": "SP %",
-            "Multi-Pin Made": "MP Made",
-            "Multi-Pin Attempts": "MP Att",
-            "Multi-Pin %": "MP %",
-            "Strikes": "STR",
-            "Strike Attempts": "STR Att",
-            "Strike %": "STR %",
-            "Baker Pts": "BKR Pts",
-            "Baker Frames": "BKR Frm",
-            "Baker Avg": "BKR Avg",
-            "Average": "AVG",
-        }
-    )
-
-    formatters: dict[str, str] = {}
-    for column in ("SP %", "MP %", "STR %"):
-        if column in view.columns:
-            formatters[column] = "{:.2%}"
-    if "BKR Avg" in view.columns:
-        formatters["BKR Avg"] = "{:.1f}"
-    if "AVG" in view.columns:
-        formatters["AVG"] = "{:.2f}"
-    for column in view.columns:
-        if re.fullmatch(r"Game \d+", str(column)):
-            formatters[str(column)] = "{:.0f}"
-
-    def percentage_color(value: object, thresholds: tuple[float, float]) -> str:
-        if value is None or pd.isna(value):
-            return ""
-        green_threshold, yellow_threshold = thresholds
-        if float(value) >= green_threshold:
-            return "background-color: #C6EFCE"
-        if float(value) >= yellow_threshold:
-            return "background-color: #FFEB9C"
-        return "background-color: #FFC7CE"
-
-    styled = view.style.format(formatters, na_rep="")
-    if "SP %" in view.columns:
-        styled = styled.map(
-            lambda value: percentage_color(value, single_thresholds),
-            subset=["SP %"],
-        )
-    if "MP %" in view.columns:
-        styled = styled.map(
-            lambda value: percentage_color(value, MULTI_PIN_THRESHOLDS),
-            subset=["MP %"],
-        )
-    if "Name" in view.columns:
-        styled = styled.apply(
-            lambda row: ["font-weight: bold"] * len(row)
-            if row["Name"] == "Total"
-            else [""] * len(row),
-            axis=1,
-        )
-
-    column_config: dict[str, object] = {
-        str(column): st.column_config.Column(str(column), width="small")
-        for column in view.columns
-    }
-    if "Name" in view.columns:
-        column_config["Name"] = st.column_config.TextColumn("Name", width="medium", pinned=True)
-    return styled, column_config
-
 
 def _render_team_baker_detail(detail: pd.DataFrame) -> None:
     st.caption("Pins: green = Ball 1 down; yellow = Ball 2 down; red = still standing; "
@@ -1862,19 +1793,19 @@ if summary_rows is not None:
     if summary_preview.empty:
         st.info("No summary data available.")
     else:
-        summary_grid, summary_column_config = _build_summary_grid(
+        summary_grid, summary_grid_options = build_summary_grid(
             summary_preview,
             selected_single_thresholds,
         )
-        st.dataframe(
+        AgGrid(
             summary_grid,
-            width="stretch",
-            height=40 + (35 * len(summary_preview)),
-            hide_index=True,
-            column_order=list(summary_grid.data.columns),
-            column_config=summary_column_config,
+            gridOptions=summary_grid_options,
+            allow_unsafe_jscode=True,
+            enable_enterprise_modules=False,
+            update_on=[],
+            server_sync_strategy="server_wins",
+            theme="streamlit",
             key="overall_summary_table",
-            row_height=35,
         )
 
     if not summary_rows_event.empty:
