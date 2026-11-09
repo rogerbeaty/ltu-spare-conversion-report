@@ -96,7 +96,7 @@ def render_pin_diagram(value: object) -> str:
         parts.append(
             '<div style="text-align:center">'
             + (f'<div style="font-size:0.7rem">{escape(rack["label"])}</div>' if rack["label"] else "")
-            + f'<svg width="70" height="61" viewBox="0 0 96 84" role="img" aria-label="{escape(description, quote=True)}">{dots}</svg>'
+            + f'<svg width="35" height="30.5" viewBox="0 0 96 84" role="img" aria-label="{escape(description, quote=True)}">{dots}</svg>'
             + f'<div style="font-size:0.7rem">Left: {escape(rack["left"])}</div></div>'
         )
     return '<div style="display:flex;gap:6px;justify-content:center">' + "".join(parts) + "</div>" if parts else ""

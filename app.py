@@ -1390,6 +1390,10 @@ def _render_table_html(
     else:
         table_html = view.to_html(index=False, classes=table_classes, border=0, escape=True)
 
+    if color_statistic:
+        table_html = table_html.replace("<th>Game Type</th>", "<th>Game<br>Type</th>")
+        table_html = table_html.replace("<th>Pin Diagram</th>", "<th>Pin<br>Diagram</th>")
+
     wrap_classes = "summary-wrap compact-table-wrap" if compact else "summary-wrap"
 
     return f"""
@@ -1431,6 +1435,10 @@ def _render_table_html(
 }}
 .summary-table.frame-detail-table th, .summary-table.frame-detail-table td {{
   padding: 0.3rem 0.25rem;
+}}
+.summary-table.frame-detail-table th {{
+  white-space: normal;
+  vertical-align: middle;
 }}
 </style>
 <div class=\"{wrap_classes}\">

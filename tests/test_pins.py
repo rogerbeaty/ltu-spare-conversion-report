@@ -21,6 +21,7 @@ def test_lauren_missed_three_six_ten(second, final, fallen):
     assert "Left: 3-6-10" in html
     assert html.count("<circle") == 10
     assert "<text" not in html
+    assert 'width="35" height="30.5"' in html
 
 
 def test_spare_strike_missing_and_inconsistent_leaves():
@@ -140,3 +141,24 @@ def test_screen_detail_hides_points_without_changing_source():
     assert len(rendered) == 2
     assert all("Points" not in frame for frame in rendered)
     assert source.loc[1, "Points"] == 20
+
+
+def test_detail_headers_wrap_without_wrapping_data_cells():
+    import re
+    from html import escape
+    from src.detail import render_statistic_chips
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "app.py").read_text())
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "_render_table_html")
+    scope = {"pd": pd, "re": re, "html_escape": escape,
+             "render_statistic_chips": render_statistic_chips,
+             "render_pin_diagram": render_pin_diagram}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "app.py", "exec"), scope)
+    frame = pd.DataFrame([{"Game Type": "Team", "Frame": 1,
+                           "Pin Diagram": build_pin_diagram(10, None), "Statistic": "Strike"}])
+    html = scope["_render_table_html"](frame, compact=True, color_statistic=True)
+    assert "<th>Game<br>Type</th>" in html
+    assert "<th>Pin<br>Diagram</th>" in html
+    assert "<td>Team</td>" in html
+    assert 'width="35" height="30.5"' in html

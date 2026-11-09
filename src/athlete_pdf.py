@@ -43,20 +43,20 @@ class PinDiagram(Flowable):
         super().__init__()
         self.racks = pin_racks(value)
         self.width = 58
-        self.height = 55 * len(self.racks)
+        self.height = 36 * len(self.racks)
 
     def draw(self) -> None:
         for index, rack in enumerate(self.racks):
-            top = self.height - index * 55
+            top = self.height - index * 36
             self.canv.setFont("Helvetica", 5.5)
             self.canv.setFillColor(TEXT)
             if rack["label"]:
                 self.canv.drawCentredString(29, top - 6, rack["label"])
             for pin, (x, y) in PIN_POSITIONS.items():
                 self.canv.setFillColor(colors.HexColor(PIN_COLORS[rack["colors"][str(pin)]]))
-                self.canv.circle(7 + x * 0.46, top - 9 - y * 0.46, 4, fill=1, stroke=0)
+                self.canv.circle(18 + x * 0.23, top - 7 - y * 0.23, 2, fill=1, stroke=0)
             self.canv.setFillColor(TEXT)
-            self.canv.drawCentredString(29, top - 53, f"Left: {rack['left']}")
+            self.canv.drawCentredString(29, top - 34, f"Left: {rack['left']}")
 
 
 class StatisticChips(Flowable):
