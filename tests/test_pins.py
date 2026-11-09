@@ -109,5 +109,34 @@ def test_pin_diagrams_fit_portrait_pdf_detail():
     width, height = table.wrap(561.6, 700)
     assert width <= 561.6
     assert height < 700
-    assert isinstance(table._cellvalues[2][5], (list, tuple))
-    assert isinstance(table._cellvalues[2][5][0], PinDiagram)
+    assert "Points" not in table._cellvalues[1]
+    assert isinstance(table._cellvalues[2][4], (list, tuple))
+    assert isinstance(table._cellvalues[2][4][0], PinDiagram)
+
+
+def test_screen_detail_hides_points_without_changing_source():
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from src.detail import split_team_baker_detail
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "app.py").read_text())
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "_render_team_baker_detail")
+    rendered = []
+    def render(frame, **kwargs):
+        rendered.append(frame)
+        return ""
+    scope = {"pd": pd, "split_team_baker_detail": split_team_baker_detail,
+             "_render_table_html": render,
+             "st": SimpleNamespace(caption=lambda *args: None,
+                                   columns=lambda count: [nullcontext() for _ in range(count)],
+                                   markdown=lambda *args, **kwargs: None)}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "app.py", "exec"), scope)
+    source = pd.DataFrame([
+        {"Game Type": "Team", "Frame": 1, "Points": "", "Ball1": 10},
+        {"Game Type": "Baker", "Frame": 1, "Points": 20, "Ball1": 10},
+    ])
+    scope["_render_team_baker_detail"](source)
+    assert len(rendered) == 2
+    assert all("Points" not in frame for frame in rendered)
+    assert source.loc[1, "Points"] == 20

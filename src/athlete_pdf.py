@@ -381,7 +381,7 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
     team_frame, baker_frame = split_team_baker_detail(frame)
     columns = [
         column
-        for column in ["Frame", "Points", "Ball1", "Ball2", "Ball3", "Pin Diagram", "Statistic"]
+        for column in ["Frame", "Ball1", "Ball2", "Ball3", "Pin Diagram", "Statistic"]
         if column in frame.columns
     ]
     data = [
@@ -396,7 +396,7 @@ def _frame_detail_pdf_table(frame: pd.DataFrame) -> Table:
             + _frame_detail_values(baker_frame, index, columns)
         )
 
-    widths = {"Frame": 20, "Points": 23, "Ball1": 18, "Ball2": 18, "Ball3": 18,
+    widths = {"Frame": 20, "Ball1": 18, "Ball2": 18, "Ball3": 18,
               "Pin Diagram": 70, "Statistic": 100}
     side_widths = [widths[column] for column in columns]
     table = Table(

@@ -1377,6 +1377,8 @@ def _render_table_html(
         html_columns.add("Pin Diagram")
 
     table_classes = "summary-table compact-table" if compact else "summary-table"
+    if color_statistic:
+        table_classes += " frame-detail-table"
     if html_columns:
         for column in view.columns:
             if column in html_columns:
@@ -1423,6 +1425,12 @@ def _render_table_html(
 }}
 .summary-table th:first-child, .summary-table td:first-child {{
   text-align: left;
+}}
+.summary-table.frame-detail-table {{
+  font-size: 0.82rem;
+}}
+.summary-table.frame-detail-table th, .summary-table.frame-detail-table td {{
+  padding: 0.3rem 0.25rem;
 }}
 </style>
 <div class=\"{wrap_classes}\">
@@ -1506,7 +1514,7 @@ def _build_summary_grid(
 def _render_team_baker_detail(detail: pd.DataFrame) -> None:
     st.caption("Pins: green = Ball 1 down; yellow = Ball 2 down; red = still standing; "
                "gray = not determined or no second ball. Left = leave after the first ball of that rack.")
-    team_detail, baker_detail = split_team_baker_detail(detail)
+    team_detail, baker_detail = split_team_baker_detail(detail.drop(columns=["Points"], errors="ignore"))
     team_column, baker_column = st.columns(2)
     with team_column:
         st.caption("Team")
