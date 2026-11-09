@@ -42,7 +42,7 @@ def _rack(first: int | None, second: int | None, leave1: object, leave2: object,
     colors = {str(pin): "unknown" for pin in ALL_PINS}
     left_text = "Unavailable"
     if remaining is not None:
-        left_text = "-".join(map(str, sorted(remaining))) or "None"
+        left_text = "-".join(map(str, sorted(remaining))) or "Strike"
         for pin in ALL_PINS - remaining:
             colors[str(pin)] = "first"
         final = None
@@ -77,7 +77,11 @@ def build_pin_diagram(ball1: object, ball2: object, ball3: object = None,
 def pin_racks(value: object) -> list[dict]:
     if not isinstance(value, str) or not value:
         return []
-    return json.loads(value)
+    racks = json.loads(value)
+    for rack in racks:
+        if rack["left"] == "None":
+            rack["left"] = "Strike"
+    return racks
 
 
 def render_pin_diagram(value: object) -> str:
@@ -97,6 +101,6 @@ def render_pin_diagram(value: object) -> str:
             '<div style="text-align:center">'
             + (f'<div style="font-size:0.7rem">{escape(rack["label"])}</div>' if rack["label"] else "")
             + f'<svg width="35" height="30.5" viewBox="0 0 96 84" role="img" aria-label="{escape(description, quote=True)}">{dots}</svg>'
-            + f'<div style="font-size:0.7rem">Left: {escape(rack["left"])}</div></div>'
+            + f'<div style="font-size:0.7rem">{escape(rack["left"])}</div></div>'
         )
     return '<div style="display:flex;gap:6px;justify-content:center">' + "".join(parts) + "</div>" if parts else ""

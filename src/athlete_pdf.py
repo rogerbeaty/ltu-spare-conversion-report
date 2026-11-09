@@ -56,7 +56,7 @@ class PinDiagram(Flowable):
                 self.canv.setFillColor(colors.HexColor(PIN_COLORS[rack["colors"][str(pin)]]))
                 self.canv.circle(18 + x * 0.23, top - 7 - y * 0.23, 2, fill=1, stroke=0)
             self.canv.setFillColor(TEXT)
-            self.canv.drawCentredString(29, top - 34, f"Left: {rack['left']}")
+            self.canv.drawCentredString(29, top - 34, rack["left"])
 
 
 class StatisticChips(Flowable):
@@ -249,7 +249,7 @@ def build_athlete_report_pdf(
                 Paragraph("Frame-by-Frame Detail", heading_style),
                 Paragraph(
                     "Pins: green = first ball down; yellow = second ball down; red = still standing; "
-                    "gray = unknown or no second ball. Left = leave after first ball of that rack.",
+                    "gray = unknown or no second ball. Text below the pins shows the leave after the first ball of that rack.",
                     styles["Normal"],
                 ),
                 _frame_detail_pdf_table(frame_detail),

@@ -18,7 +18,8 @@ def test_lauren_missed_three_six_ten(second, final, fallen):
     assert {int(pin) for pin, state in rack["colors"].items() if state == "second"} == fallen
     assert sum(state == "first" for state in rack["colors"].values()) == 7
     html = render_pin_diagram(value)
-    assert "Left: 3-6-10" in html
+    assert ">3-6-10</div>" in html
+    assert "Left:" not in html
     assert html.count("<circle") == 10
     assert "<text" not in html
     assert 'width="35" height="30.5"' in html
@@ -29,6 +30,10 @@ def test_spare_strike_missing_and_inconsistent_leaves():
     assert spare["colors"]["10"] == "second"
     strike = pin_racks(build_pin_diagram(10, None))[0]
     assert set(strike["colors"].values()) == {"first"}
+    assert strike["left"] == "Strike"
+    strike_html = render_pin_diagram(build_pin_diagram(10, None))
+    assert ">Strike</div>" in strike_html
+    assert "None" not in strike_html
     unknown = pin_racks(build_pin_diagram(7, 1, leave1=None))[0]
     assert set(unknown["colors"].values()) == {"unknown"}
     invalid = pin_racks(build_pin_diagram(7, 1, leave1="3-6-10", leave2="4-7"))[0]
@@ -46,6 +51,24 @@ def test_tenth_frame_resets_rack_without_mixing_deliveries():
     assert len(racks) == 2
     assert racks[1]["left"] == "4-7"
     assert racks[1]["colors"]["4"] == "unknown"
+
+
+def test_pdf_pin_labels_match_screen_labels():
+    from types import SimpleNamespace
+    from src.athlete_pdf import PinDiagram
+
+    labels = []
+    canvas = SimpleNamespace(setFont=lambda *args: None, setFillColor=lambda *args: None,
+                             circle=lambda *args, **kwargs: None,
+                             drawCentredString=lambda x, y, text: labels.append(text))
+    for value in (build_pin_diagram(7, 2, leave1="3-6-10", leave2="3"),
+                  build_pin_diagram(10, None)):
+        drawing = PinDiagram(value)
+        drawing.canv = canvas
+        drawing.draw()
+    assert labels == ["3-6-10", "Strike"]
+    legacy = build_pin_diagram(10, None).replace('"Strike"', '"None"')
+    assert pin_racks(legacy)[0]["left"] == "Strike"
 
 
 def test_other_bowler_fill_shows_only_the_fill_rack():

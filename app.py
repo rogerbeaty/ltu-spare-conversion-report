@@ -1258,7 +1258,7 @@ def _build_combined_ball_by_ball_detail(
     team_vs_baker_view: bool = False,
     include_bowler_metadata: bool = False,
 ) -> pd.DataFrame:
-    """Cache event detail including compact pin diagrams (presentation v1)."""
+    """Cache event detail including compact pin diagrams (presentation v2)."""
     return _build_combined_ball_by_ball_detail_uncached(
         source_files,
         team_scope,
@@ -1521,7 +1521,7 @@ def _build_summary_grid(
 
 def _render_team_baker_detail(detail: pd.DataFrame) -> None:
     st.caption("Pins: green = Ball 1 down; yellow = Ball 2 down; red = still standing; "
-               "gray = not determined or no second ball. Left = leave after the first ball of that rack.")
+               "gray = not determined or no second ball. Text below the pins shows the leave after the first ball of that rack.")
     team_detail, baker_detail = split_team_baker_detail(detail.drop(columns=["Points"], errors="ignore"))
     team_column, baker_column = st.columns(2)
     with team_column:
